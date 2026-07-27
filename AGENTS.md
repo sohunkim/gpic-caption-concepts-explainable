@@ -368,14 +368,30 @@ stale, unreadable, or no longer changing while the process is still running,
 inspect the process state before continuing.
 
 Before sending a final answer or otherwise ending a turn after any background
-job was started, adopted, or may still be active, run:
+job was started, adopted, or may still be active, run one serial pre-final
+check:
+
+`scripts\run_python.ps1 scripts\run_script_with_timeout.py --timeout-seconds 60 -- scripts\run_pre_final_sanity.py --background-root outputs --fail-if-background-running`
+
+When a GitHub-backed code handoff was just pushed, include the expected commit
+in the same serial check:
+
+`scripts\run_python.ps1 scripts\run_script_with_timeout.py --timeout-seconds 60 -- scripts\run_pre_final_sanity.py --expected-commit <40-char-sha> --require-clean --background-root outputs --fail-if-background-running`
+
+Do not split these into parallel `verify_git_handoff.py` and
+`list_active_background_jobs.py` guarded commands. The incident gate is
+repository-global; parallel guarded checks can interrupt each other and create
+an incident while no pipeline work is actually wrong.
+
+The legacy direct background-only check remains useful only as a narrow
+diagnostic:
 
 `scripts\run_python.ps1 scripts\run_script_with_timeout.py --timeout-seconds 60 -- scripts\list_active_background_jobs.py --root outputs --fail-if-running`
 
-If this command reports an active job, do not send a final answer. Continue
-polling the job, or explicitly stop/quarantine the job only when it is stale or
-wrong. This check is the durable pre-final guard; do not rely on memory that a
-job was "probably done."
+If the serial pre-final check reports an active job, do not send a final
+answer. Continue polling the job, or explicitly stop/quarantine the job only
+when it is stale or wrong. This check is the durable pre-final guard; do not
+rely on memory that a job was "probably done."
 
 If a background launcher is visible but no expected child process exists, stop
 the launcher and treat the job as not started.
