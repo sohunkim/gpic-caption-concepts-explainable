@@ -22,6 +22,179 @@ script = _load_script()
 
 
 class ExportAttributeStage5LexiconsTest(unittest.TestCase):
+    def test_mwe_exports_separator_equivalent_stage4_surface(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            inventory = root / "attributes.tsv"
+            output_dir = root / "lexicons"
+            _write_inventory(
+                inventory,
+                [
+                    {
+                        "span_key": "stained-glass window",
+                        "attribute_unit_type": "mwe",
+                        "observed_surface": "stained-glass window",
+                        "lookup_forms": "stained-glass window",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "oewn-04304888-n",
+                        "canonical_surface": "stained-glass window",
+                    },
+                ],
+            )
+
+            script.export_attribute_stage5_lexicons(
+                attribute_inventory_path=inventory,
+                output_dir=output_dir,
+                base_lexicon_dir=None,
+            )
+
+            synonyms = {
+                row["raw"]: row["canonical"]
+                for row in _read_tsv(output_dir / "attribute_synonyms.tsv")
+            }
+
+        self.assertEqual(
+            synonyms,
+            {
+                "stained-glass window": "stained-glass window",
+                "stained glass window": "stained-glass window",
+            },
+        )
+
+    def test_current_mwe_mapping_replaces_stale_inventory_derived_base_mapping(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            inventory = root / "attributes.tsv"
+            base_lexicons = root / "base_lexicons"
+            output_dir = root / "lexicons"
+            _write_inventory(
+                inventory,
+                [
+                    {
+                        "span_key": "wood grain",
+                        "attribute_unit_type": "mwe",
+                        "observed_surface": "wood grain",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "oewn-04958129-n",
+                        "canonical_surface": "wood grain",
+                    },
+                ],
+            )
+            _write_attribute_synonyms(
+                base_lexicons / "attribute_synonyms.tsv",
+                [
+                    {
+                        "raw": "wood grain",
+                        "canonical": "woodgrain",
+                        "source": "gpic_observed_attribute_inventory",
+                        "notes": "stale prefix snapshot",
+                    }
+                ],
+            )
+
+            summary = script.export_attribute_stage5_lexicons(
+                attribute_inventory_path=inventory,
+                output_dir=output_dir,
+                base_lexicon_dir=base_lexicons,
+            )
+
+            self.assertEqual(
+                _read_tsv(output_dir / "attribute_synonyms.tsv"),
+                [
+                    {
+                        "raw": "wood grain",
+                        "canonical": "wood grain",
+                        "source": "gpic_observed_attribute_inventory",
+                        "notes": (
+                            "export_tag=chosen_canonical_synonym; "
+                            "decision_status=chosen"
+                        ),
+                    }
+                ],
+            )
+            self.assertEqual(
+                summary["replaced_stale_attribute_mwe_synonym_rows"],
+                1,
+            )
+
+    def test_current_mwe_mapping_still_blocks_external_base_conflict(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            inventory = root / "attributes.tsv"
+            base_lexicons = root / "base_lexicons"
+            output_dir = root / "lexicons"
+            _write_inventory(
+                inventory,
+                [
+                    {
+                        "span_key": "wood grain",
+                        "attribute_unit_type": "mwe",
+                        "observed_surface": "wood grain",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "oewn-04958129-n",
+                        "canonical_surface": "wood grain",
+                    },
+                ],
+            )
+            _write_attribute_synonyms(
+                base_lexicons / "attribute_synonyms.tsv",
+                [
+                    {
+                        "raw": "wood grain",
+                        "canonical": "woodgrain",
+                        "source": "manual_curated_lexicon",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "conflicting attribute synonym mapping",
+            ):
+                script.export_attribute_stage5_lexicons(
+                    attribute_inventory_path=inventory,
+                    output_dir=output_dir,
+                    base_lexicon_dir=base_lexicons,
+                )
+
+    def test_conflicting_single_and_mwe_raw_mapping_blocks_export(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            inventory = root / "attributes.tsv"
+            output_dir = root / "lexicons"
+            _write_inventory(
+                inventory,
+                [
+                    {
+                        "span_key": "dark brown",
+                        "observed_surface": "dark brown",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "fake-1",
+                        "canonical_surface": "dark_brown",
+                    },
+                    {
+                        "span_key": "other",
+                        "observed_surface": "dark brown",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "fake-2",
+                        "canonical_surface": "brown",
+                    },
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "conflicting attribute synonym mapping",
+            ):
+                script.export_attribute_stage5_lexicons(
+                    attribute_inventory_path=inventory,
+                    output_dir=output_dir,
+                    base_lexicon_dir=None,
+                )
+
     def test_excluded_rows_do_not_export_canonical_synonym(self) -> None:
         with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
             root = Path(tmp)
@@ -186,8 +359,10 @@ class ExportAttributeStage5LexiconsTest(unittest.TestCase):
 def _write_inventory(path: Path, rows: list[dict[str, str]]) -> None:
     fieldnames = [
         "span_key",
+        "attribute_unit_type",
         "observed_surface",
         "example_surfaces",
+        "lookup_forms",
         "decision_status",
         "decision_reason",
         "canonical_surface",
@@ -198,6 +373,18 @@ def _write_inventory(path: Path, rows: list[dict[str, str]]) -> None:
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_attribute_synonyms(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("raw", "canonical", "source", "notes"),
+            delimiter="\t",
+        )
         writer.writeheader()
         writer.writerows(rows)
 

@@ -82,6 +82,30 @@ class EnrichGpicInventoryCanonicalTest(unittest.TestCase):
             "selected_by_unique_observed_span_surface_key",
         )
 
+    def test_attribute_mwe_variants_do_not_include_separator_removal(self) -> None:
+        keys = canonical_script._observed_surface_variant_keys(
+            {"observed_surface": "dark brown"},
+            _FakeMorphy({("dark brown", "a"): {"darkbrown"}}),
+            morphy_pos=("a",),
+            attribute_mwe_mode=True,
+        )
+
+        self.assertIn("dark brown", keys)
+        self.assertIn("dark-brown", keys)
+        self.assertNotIn("darkbrown", keys)
+
+    def test_attribute_mwe_morphy_applies_to_anchor_only(self) -> None:
+        keys = canonical_script._observed_surface_variant_keys(
+            {"observed_surface": "cube shaped"},
+            _FakeMorphy({("shaped", "v"): {"shape"}}),
+            morphy_pos=("v",),
+            attribute_mwe_mode=True,
+        )
+
+        self.assertIn("cube shape", keys)
+        self.assertIn("cube-shape", keys)
+        self.assertNotIn("cubeshape", keys)
+
     def test_main_exits_before_canonical_when_needs_manual_rows_remain(self) -> None:
         args = argparse.Namespace(
             input="input.tsv",

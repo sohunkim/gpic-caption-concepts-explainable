@@ -48,6 +48,7 @@ from gpic_concepts_v1.stage3_annotate import (
 from gpic_concepts_v1.stage4_extract_raw import (
     _load_object_lookup_runtime,
     load_gpic_action_inventory,
+    load_gpic_attribute_mwe_inventory,
     load_gpic_object_inventory,
     load_preposition_mwe_lexicon,
     run_stage4_extract_raw,
@@ -896,7 +897,11 @@ def run_mixed_caption_pipeline(
     else:
         stage_start = time.perf_counter()
         write_progress("stage4_lookup_load")
+        _raise_if_attribute_inventory_not_ready(attribute_inventory)
         object_lookup = load_gpic_object_inventory(object_inventory)
+        attribute_mwe_lookup = load_gpic_attribute_mwe_inventory(
+            attribute_inventory
+        )
         if action_inventory is not None:
             action_lookup = load_gpic_action_inventory(action_inventory)
             runtime_action_lookup_preview = False
@@ -918,6 +923,7 @@ def run_mixed_caption_pipeline(
             raw_edges_path=stage4_dir / "raw_edges.jsonl",
             summary_path=stage4_dir / "summary.jsonl",
             object_lookup=object_lookup,
+            attribute_mwe_lookup=attribute_mwe_lookup,
             action_lookup=action_lookup,
             preposition_mwe_lookup=preposition_mwe_lookup,
             progress_path=stage4_dir / "progress.json",
@@ -927,7 +933,6 @@ def run_mixed_caption_pipeline(
 
         stage_start = time.perf_counter()
         write_progress("stage5_canonicalize")
-        _raise_if_attribute_inventory_not_ready(attribute_inventory)
         stage5_summary = run_stage5_canonicalize(
             stage4_dir / "raw_mentions.jsonl",
             stage4_dir / "raw_edges.jsonl",

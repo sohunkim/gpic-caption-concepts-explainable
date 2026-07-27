@@ -40,6 +40,13 @@ class PipelineAlreadyRunningError(IncidentGateError):
     pass
 
 
+def configure_cli_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -436,6 +443,7 @@ def clear_incident(
     guard_added: str,
     verification_evidence: str,
     verification_command: Sequence[str] | None = None,
+    verification_timeout_seconds: int | None = None,
     state_dir: Path | None = None,
 ) -> dict[str, Any]:
     directory = state_dir or state_dir_from_env()
@@ -459,6 +467,11 @@ def clear_incident(
 
     verification_result: dict[str, Any] = {}
     if verification_command:
+        if verification_timeout_seconds is None or verification_timeout_seconds <= 0:
+            raise IncidentGateError(
+                "--verify-command requires a positive --verify-timeout-seconds; "
+                "unbounded incident verification is forbidden"
+            )
         command = list(verification_command)
         if command and command[0] == "--":
             command = command[1:]
@@ -469,19 +482,33 @@ def clear_incident(
         verification_env[STATE_DIR_ENV] = str(directory)
         verification_env[VERIFICATION_INCIDENT_ENV] = str(incident.get("incident_id", ""))
         verification_env.pop(RUN_TOKEN_ENV, None)
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            env=verification_env,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                env=verification_env,
+                timeout=verification_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            verification_result = {
+                "command": redact_argv(command),
+                "timeout_seconds": verification_timeout_seconds,
+                "stdout_tail": _timeout_output_tail(exc.stdout),
+                "stderr_tail": _timeout_output_tail(exc.stderr),
+            }
+            raise IncidentGateError(
+                "Incident verification command timed out; incident remains open.\n"
+                + json.dumps(verification_result, ensure_ascii=False, sort_keys=True)
+            ) from exc
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         verification_result = {
             "command": redact_argv(command),
             "returncode": completed.returncode,
+            "timeout_seconds": verification_timeout_seconds,
             "stdout_tail": stdout[-4000:],
             "stderr_tail": stderr[-4000:],
         }
@@ -503,6 +530,14 @@ def clear_incident(
     incident_path(directory).unlink(missing_ok=True)
     running_path(directory).unlink(missing_ok=True)
     return resolved
+
+
+def _timeout_output_tail(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value[-4000:]
 
 
 def reject_direct_powershell_script_command(command: Sequence[str]) -> None:
@@ -549,6 +584,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     clear_parser.add_argument("--root-cause", required=True)
     clear_parser.add_argument("--guard-added", required=True)
     clear_parser.add_argument("--verification-evidence", required=True)
+    clear_parser.add_argument("--verify-timeout-seconds", type=int)
     clear_parser.add_argument("--verify-command", nargs=argparse.REMAINDER)
 
     run_parser = subparsers.add_parser("run")
@@ -558,6 +594,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    configure_cli_streams()
     args = parse_args(argv)
     args.state_dir = args.state_dir.expanduser().resolve()
     if args.action == "status":
@@ -588,6 +625,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             guard_added=args.guard_added,
             verification_evidence=args.verification_evidence,
             verification_command=args.verify_command,
+            verification_timeout_seconds=args.verify_timeout_seconds,
             state_dir=args.state_dir,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))

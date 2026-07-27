@@ -153,6 +153,7 @@ def start_job(args: argparse.Namespace) -> int:
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "process_started_at_utc": process_started_at_utc(process.pid),
     }
     write_json_atomic(pid_path, record)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
@@ -165,8 +166,10 @@ def status_job(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "missing_pid_file", "pid_file": str(pid_path)}))
         return 2
     record = json.loads(pid_path.read_text(encoding="utf-8"))
-    pid = int(record["pid"])
-    record["running"] = process_is_running(pid)
+    running, process_status, actual_started_at = process_matches_record(record)
+    record["running"] = running
+    record["process_status"] = process_status
+    record["actual_process_started_at_utc"] = actual_started_at
     if args.progress_output:
         record["progress"] = read_progress_snapshot(Path(args.progress_output))
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
@@ -187,12 +190,13 @@ def watch_job(args: argparse.Namespace) -> int:
     last_record: dict | None = None
     while True:
         record = json.loads(pid_path.read_text(encoding="utf-8"))
-        pid = int(record["pid"])
-        running = process_is_running(pid)
+        running, process_status, actual_started_at = process_matches_record(record)
         output_exists = bool(args.expect_output and Path(args.expect_output).exists())
         last_record = {
             **record,
             "running": running,
+            "process_status": process_status,
+            "actual_process_started_at_utc": actual_started_at,
             "expect_output": args.expect_output or "",
             "expect_output_exists": output_exists,
             "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -223,6 +227,7 @@ def adopt_job(args: argparse.Namespace) -> int:
         "stderr": args.stderr,
         "started_at_utc": "",
         "adopted_at_utc": datetime.now(timezone.utc).isoformat(),
+        "process_started_at_utc": process_started_at_utc(args.pid),
     }
     write_json_atomic(pid_path, record)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
@@ -292,6 +297,80 @@ def process_is_running(pid: int) -> bool:
         return exit_code.value == still_active
     finally:
         kernel32.CloseHandle(handle)
+
+
+def process_started_at_utc(pid: int) -> str:
+    if os.name != "nt":
+        return _posix_process_started_at_utc(pid)
+
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ""
+    try:
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel_time = wintypes.FILETIME()
+        user_time = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return ""
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        unix_seconds = ticks / 10_000_000 - 11_644_473_600
+        return datetime.fromtimestamp(unix_seconds, timezone.utc).isoformat()
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def process_matches_record(
+    record: dict[str, object],
+    *,
+    tolerance_seconds: float = 300.0,
+) -> tuple[bool, str, str]:
+    pid = int(record.get("pid", 0) or 0)
+    if not pid or not process_is_running(pid):
+        return False, "not_running", ""
+    actual_started_at = process_started_at_utc(pid)
+    expected_started_at = str(
+        record.get("process_started_at_utc")
+        or record.get("started_at_utc")
+        or "",
+    )
+    if actual_started_at and expected_started_at:
+        try:
+            actual = datetime.fromisoformat(actual_started_at)
+            expected = datetime.fromisoformat(expected_started_at)
+        except ValueError:
+            return True, "running_start_time_unparseable", actual_started_at
+        if abs((actual - expected).total_seconds()) > tolerance_seconds:
+            return False, "stale_pid_reused", actual_started_at
+    return True, "running", actual_started_at
+
+
+def _posix_process_started_at_utc(pid: int) -> str:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        start_ticks = int(stat_fields[21])
+        clock_ticks = int(os.sysconf("SC_CLK_TCK"))
+        boot_line = next(
+            line
+            for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+            if line.startswith("btime ")
+        )
+        boot_seconds = int(boot_line.split()[1])
+    except (OSError, ValueError, IndexError, StopIteration):
+        return ""
+    started = boot_seconds + start_ticks / clock_ticks
+    return datetime.fromtimestamp(started, timezone.utc).isoformat()
 
 
 def write_json_atomic(path: Path, payload: dict) -> None:

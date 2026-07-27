@@ -22,6 +22,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from incident_gate import guarded_entrypoint
+from ssh_command_policy import reject_ad_hoc_multistep_ssh
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +71,7 @@ def exit_code_from_wait_status(status: int) -> int:
 
 def main() -> int:
     args = parse_args()
+    reject_ad_hoc_multistep_ssh(args.command)
     if not hasattr(pty, "fork"):
         print("ERROR: pty.fork() is unavailable; run this helper under Linux/WSL.", file=sys.stderr)
         return 2

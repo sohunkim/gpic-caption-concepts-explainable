@@ -24,11 +24,20 @@ STAGE456_TIMEOUT_GUARDED_SCRIPTS = frozenset(
     }
 )
 BACKGROUND_LAUNCHER = "run_background_job.py"
+FOREGROUND_SERVICE_SCRIPTS = frozenset(
+    {
+        "launch_packaged_interactive_report.py",
+        "report_server.py",
+    }
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run a Python script in-process with a hard os._exit timeout."
+        description=(
+            "Run a Python script in-process with an optional hard os._exit timeout. "
+            "Use --timeout-seconds 0 for a monitored foreground run without a wall-clock kill."
+        )
     )
     parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument(
@@ -42,8 +51,8 @@ def main() -> int:
     parser.add_argument("script")
     args, script_args = parser.parse_known_args()
 
-    if args.timeout_seconds < 1:
-        raise SystemExit("--timeout-seconds must be greater than zero.")
+    if args.timeout_seconds < 0:
+        raise SystemExit("--timeout-seconds must be zero or greater.")
 
     root = Path(__file__).absolute().parent.parent
     script_path = Path(args.script)
@@ -55,6 +64,7 @@ def main() -> int:
         script_path,
         script_args,
         allow_stage456_timeout=args.allow_stage456_timeout,
+        hard_timeout_enabled=args.timeout_seconds > 0,
     )
 
     temp_root = script_temp_root(root)
@@ -64,19 +74,22 @@ def main() -> int:
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     start = time.perf_counter()
-    timer = threading.Timer(
-        args.timeout_seconds,
-        timeout_exit,
-        kwargs={
-            "script": script_path,
-            "start": start,
-            "timeout_seconds": args.timeout_seconds,
-        },
-    )
-    timer.daemon = True
+    timer: threading.Timer | None = None
+    if args.timeout_seconds > 0:
+        timer = threading.Timer(
+            args.timeout_seconds,
+            timeout_exit,
+            kwargs={
+                "script": script_path,
+                "start": start,
+                "timeout_seconds": args.timeout_seconds,
+            },
+        )
+        timer.daemon = True
     old_argv = sys.argv[:]
     try:
-        timer.start()
+        if timer is not None:
+            timer.start()
         sys.argv = [str(script_path), *script_args]
         runpy.run_path(str(script_path), run_name="__main__")
     except SystemExit as exc:
@@ -89,7 +102,8 @@ def main() -> int:
         return 1
     finally:
         sys.argv = old_argv
-        timer.cancel()
+        if timer is not None:
+            timer.cancel()
     return 0
 
 
@@ -98,6 +112,7 @@ def _raise_if_forbidden_timeout_target(
     script_args: list[str],
     *,
     allow_stage456_timeout: bool = False,
+    hard_timeout_enabled: bool = True,
 ) -> None:
     if script_path.name == BACKGROUND_LAUNCHER:
         raise SystemExit(
@@ -105,6 +120,14 @@ def _raise_if_forbidden_timeout_target(
             "wrapper. Launch run_background_job.py directly so its detached child owns "
             "the incident running marker."
         )
+    if script_path.name in FOREGROUND_SERVICE_SCRIPTS:
+        raise SystemExit(
+            "Refusing to run a foreground report service through the script "
+            "runner. Use run_report_server_operation.py so start, status, and "
+            "stop operations have bounded lifetimes."
+        )
+    if not hard_timeout_enabled:
+        return
     if allow_stage456_timeout:
         return
     if script_path.name not in STAGE456_TIMEOUT_GUARDED_SCRIPTS:

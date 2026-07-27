@@ -250,6 +250,37 @@ Stage 2 산출물:
 - consumed core token을 제외한 noun chunk 내부 token 중 `dep in {"amod", "compound", "nmod"}`이면 attribute 후보로 만든다.
 - 위 attribute 후보 token에서 `conj` chain으로 이어지는 token도 같은 noun chunk 안에 있고 consumed core token이 아니면 attribute 후보로 만든다.
 - `conj` token은 독립적으로 attribute 후보가 되지 않고, 이미 accepted attribute modifier가 head일 때만 확장된다.
+- Stage 3.5 attribute inventory builder는 Stage 4 R13과 동일한 same-chunk
+  `conj` traversal을 적용해야 한다. Base dependency token만 inventory에
+  넣고 R13에서만 conjunct를 확장하는 구현은 허용하지 않는다.
+- attribute inventory의 내부 식별키는
+  `(attribute_unit_type, span_key)`이다. 기존 row는
+  `attribute_unit_type=single_token`으로 취급하고, 하나의 Stage 3 token
+  text 안에 공백이 있어도 MWE로 재분류하지 않는다.
+- object core 밖 base/conj attribute anchor마다 anchor를 오른쪽 끝으로 갖는
+  contiguous left-expanding span을 생성한다. 실제 Stage 3 token이 2개
+  이상인 span만 `attribute_unit_type=mwe` 후보가 된다.
+- attribute MWE span은 selected object core, relation-MWE consumed token,
+  quantity, `cc`, punctuation, noun-chunk 경계와 tag-list segment 경계를
+  넘지 않는다.
+- attribute MWE OEWN lookup은 raw `lowercase + strip`, space/hyphen/underscore
+  separator variant, anchor token만 Morphy한 재조립 phrase, 그 phrase의
+  separator variant 순서로 수행한다. Phrase 전체 Morphy와 separator 완전
+  제거형은 사용하지 않는다.
+- 반환 synset lemma가 lookup query와 separator-equivalent하게 맞는 경우만
+  attribute MWE OEWN hit로 인정한다.
+- OEWN hit가 하나 이상인 span 중 token 수가 가장 긴 span을 선택한다.
+  겹침 tie는 오른쪽 anchor, 시작 위치 순으로 결정하고 선택된 span끼리는
+  겹치지 않는다. Longest span이 `needs_manual`이어도 짧은 span으로
+  후퇴하지 않는다.
+- object가 없는 tag-list segment 전체가 known OEWN-valid attribute MWE이면
+  그 segment 전체를 MWE inventory 관측으로 남긴다.
+- 모든 attribute inventory row는 `attribute_unit_type`,
+  `span_token_count`, `anchor_token_offset`, `lookup_forms`,
+  `attribute_mwe_rule_version`을 기록한다.
+- quantity 판정은 Stage 3.5 inventory에서도 R13/R14 runtime과 같은 우선순위를
+  사용한다. `NUM` 또는 quantity modifier로 판정된 token은 attribute
+  inventory의 base/conj 후보로 중복 추가하지 않는다.
 - raw surface는 원문 그대로 보존한다.
 - lookup query는 raw surface를 `lowercase + strip`한 값으로 만든다.
 - OEWN 2025+에서 lookup한다.
@@ -519,6 +550,18 @@ Rules:
 - R13 attribute modifier는 같은 noun chunk 안에서 `dep in {"amod", "compound", "nmod"}`인 token을 기본 후보로 사용한다.
 - R13은 기본 후보에서 `conj` chain으로 이어지는 token이 같은 noun chunk 안에 있고 consumed core token이 아니면 attribute로 확장한다.
 - R13은 `conj` token을 독립 attribute 후보로 보지 않는다.
+- R13은 resolved attribute inventory의 MWE matcher와 Stage 3.5가 공유하는
+  span selector를 사용한다. 선택된 MWE는 attribute mention 하나와
+  `has_attribute` edge 하나를 만들고, 내부 token의 single-token attribute
+  mention은 해당 noun chunk에서만 억제한다.
+- attribute MWE의 local consumption은 action extraction으로 전달하지 않는다.
+  따라서 `painted face`처럼 attribute/action 중복이 허용된 기존 정책은
+  유지한다.
+- `dark brown and bright blue jersey`처럼 conjunction branch가 나뉘면
+  `dark brown`, `bright blue`를 각각 선택하고 branch 사이를 가로지르는
+  MWE는 만들지 않는다.
+- object 없는 tag-list segment 전체가 resolved attribute MWE이면 unattached
+  attribute mention 하나를 보존하고 `has_attribute` edge는 만들지 않는다.
 - R14 quantity modifier는 같은 noun chunk 안에서 `dep == "nummod"` 또는 `pos == "NUM"`인 token만 사용한다.
 - tag-list path에서 segment 내부 object가 없고 segment가 단일 attribute-like token으로만 구성되면 unattached attribute mention으로 남긴다.
 - tag-list path에서 unattached attribute mention은 `has_attribute` edge를 만들지 않는다.

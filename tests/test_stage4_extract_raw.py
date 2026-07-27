@@ -6,6 +6,10 @@ import unittest
 import uuid
 
 from gpic_concepts_v1.io_jsonl import iter_jsonl, write_jsonl
+from gpic_concepts_v1.attribute_units import (
+    ATTRIBUTE_MWE_RULE_VERSION,
+    ResolvedAttributeMweIndex,
+)
 from gpic_concepts_v1.schema import MISSING_SOURCE_MENTION_ID
 from gpic_concepts_v1.stage4_extract_raw import (
     _ActionLookupResult,
@@ -81,6 +85,120 @@ def chunk(
 
 
 class Stage4ExtractRawTest(unittest.TestCase):
+    def test_attribute_mwe_is_one_mention_and_one_edge(self) -> None:
+        record = {
+            "caption_id": "c-attribute-mwe",
+            "caption": "A light brown dog.",
+            "tokens": [
+                token(0, "light", "light", "ADJ", "compound", 1, tag="JJ"),
+                token(1, "brown", "brown", "ADJ", "amod", 2, tag="JJ"),
+                token(2, "dog", "dog", "NOUN", "ROOT", 2, tag="NN"),
+            ],
+            "noun_chunks": [chunk("light brown dog", 2, 0, 3, "dog")],
+        }
+        matcher = _attribute_mwe_index("light brown")
+
+        result = extract_raw_concepts_from_stage3_record(
+            record,
+            object_lookup=fake_object_lookup,
+            attribute_mwe_lookup=matcher,
+        )
+
+        attributes = [
+            mention.to_dict()
+            for mention in result.raw_mentions
+            if mention.mention_type == "attribute"
+        ]
+        attribute_edges = [
+            edge.to_dict()
+            for edge in result.raw_edges
+            if edge.edge_type == "has_attribute"
+        ]
+        self.assertEqual([row["text"] for row in attributes], ["light brown"])
+        self.assertEqual(len(attribute_edges), 1)
+        self.assertEqual(
+            attributes[0]["source_detail"]["selected_token_indices"],
+            [0, 1],
+        )
+
+    def test_attribute_mwe_does_not_cross_quantity_boundary(self) -> None:
+        record = {
+            "caption_id": "c-attribute-mwe-quantity",
+            "caption": "Two light brown dogs.",
+            "tokens": [
+                token(0, "Two", "two", "NUM", "nummod", 3, tag="CD"),
+                token(1, "light", "light", "ADJ", "compound", 2, tag="JJ"),
+                token(2, "brown", "brown", "ADJ", "amod", 3, tag="JJ"),
+                token(3, "dogs", "dog", "NOUN", "ROOT", 3, tag="NNS"),
+            ],
+            "noun_chunks": [chunk("Two light brown dogs", 3, 0, 4, "dogs")],
+        }
+        matcher = ResolvedAttributeMweIndex(
+            {
+                "two light brown": _attribute_mwe_row("two light brown", token_count=3),
+                "light brown": _attribute_mwe_row("light brown"),
+            }
+        )
+
+        result = extract_raw_concepts_from_stage3_record(
+            record,
+            object_lookup=fake_object_lookup,
+            attribute_mwe_lookup=matcher,
+        )
+
+        self.assertEqual(
+            [
+                mention.text
+                for mention in result.raw_mentions
+                if mention.mention_type == "attribute"
+            ],
+            ["light brown"],
+        )
+        self.assertEqual(
+            [
+                mention.text
+                for mention in result.raw_mentions
+                if mention.mention_type == "quantity"
+            ],
+            ["Two"],
+        )
+
+    def test_conjunct_single_is_suppressed_when_it_is_inside_attribute_mwe(self) -> None:
+        record = {
+            "caption_id": "c-conj-attribute-mwe",
+            "caption": "White and light blue jerseys.",
+            "tokens": [
+                token(0, "white", "white", "ADJ", "amod", 4, tag="JJ"),
+                token(1, "and", "and", "CCONJ", "cc", 0, tag="CC"),
+                token(2, "light", "light", "ADJ", "amod", 3, tag="JJ"),
+                token(3, "blue", "blue", "ADJ", "conj", 0, tag="JJ"),
+                token(4, "jerseys", "jersey", "NOUN", "ROOT", 4, tag="NNS"),
+            ],
+            "noun_chunks": [
+                chunk("white and light blue jerseys", 4, 0, 5, "jerseys")
+            ],
+        }
+
+        result = extract_raw_concepts_from_stage3_record(
+            record,
+            object_lookup=fake_object_lookup,
+            attribute_mwe_lookup=_attribute_mwe_index("light blue"),
+        )
+
+        attributes = [
+            mention.to_dict()
+            for mention in result.raw_mentions
+            if mention.mention_type == "attribute"
+        ]
+        attribute_edges = [
+            edge.to_dict()
+            for edge in result.raw_edges
+            if edge.edge_type == "has_attribute"
+        ]
+        self.assertEqual([row["text"] for row in attributes], ["white", "light blue"])
+        self.assertEqual(len(attribute_edges), 2)
+        self.assertNotIn("blue", [row["text"] for row in attributes])
+
     def test_extracts_objects_attributes_quantity_action_and_roles(self) -> None:
         record = {
             "caption_id": "c1",
@@ -179,6 +297,42 @@ class Stage4ExtractRawTest(unittest.TestCase):
         self.assertEqual(_edge_sig(edges), {("has_attribute", "has_attribute", "R13"), ("has_quantity", "has_quantity", "R14")})
         self.assertTrue(all(m["source_detail"].get("caption_shape") == "tag_list" for m in mentions))
         self.assertEqual(mentions[-1]["source_detail"]["modifier_source"], "tag_list_unattached_attribute")
+
+    def test_tag_list_known_attribute_mwe_is_preserved_without_edge(self) -> None:
+        dark = token(0, "dark", "dark", "ADJ", "amod", 1, tag="JJ")
+        brown = token(1, "brown", "brown", "ADJ", "ROOT", 1, tag="JJ")
+        record = {
+            "caption_id": "tag-mwe",
+            "caption": "dark brown",
+            "tokens": [dark, brown],
+            "noun_chunks": [],
+            "tag_segments": [
+                {
+                    "segment_id": "t0",
+                    "text": "dark brown",
+                    "tokens": [dark, brown],
+                    "noun_chunks": [],
+                }
+            ],
+            "meta": {"caption_shape": "tag_list"},
+        }
+
+        result = extract_raw_concepts_from_stage3_record(
+            record,
+            object_lookup=fake_object_lookup,
+            attribute_mwe_lookup=_attribute_mwe_index("dark brown"),
+            preposition_mwe_lookup=(),
+        )
+
+        self.assertEqual(
+            [(mention.mention_type, mention.text) for mention in result.raw_mentions],
+            [("attribute", "dark brown")],
+        )
+        self.assertEqual(result.raw_edges, [])
+        self.assertEqual(
+            result.raw_mentions[0].source_detail["modifier_source"],
+            "tag_list_unattached_attribute_mwe",
+        )
 
     def test_ambiguous_object_synset_stops_raw_extraction(self) -> None:
         record = {
@@ -2004,19 +2158,25 @@ class Stage4DocDirectExtractionTest(unittest.TestCase):
         rows = [
             {
                 "key": "k-doc-direct",
-                "caption": "A brown dog sits on a wooden bench.",
+                "caption": "A light brown dog sits on a wooden bench.",
                 "caption_type": "short",
-            }
+            },
+            {
+                "key": "k-doc-direct-conj-mwe",
+                "caption": "White and light blue jerseys are displayed.",
+                "caption_type": "short",
+            },
         ]
+        attribute_mwe_lookup = _attribute_mwe_index("light brown", "light blue")
 
-        stage3_record = next(
+        stage3_records = list(
             iter_stage3_records_from_rows(
                 rows,
                 nlp=self.nlp,
                 batch_size=1,
             )
         )
-        annotated = next(
+        annotated_docs = list(
             iter_annotated_docs_from_rows(
                 rows,
                 nlp=self.nlp,
@@ -2024,28 +2184,62 @@ class Stage4DocDirectExtractionTest(unittest.TestCase):
             )
         )
 
-        record_result = extract_raw_concepts_from_stage3_record(
-            stage3_record.to_dict(),
-            object_lookup=fake_object_lookup,
-        )
-        doc_result = extract_raw_concepts_from_doc(
-            annotated.caption_id,
-            annotated.doc,
-            object_lookup=fake_object_lookup,
-        )
+        for stage3_record, annotated in zip(
+            stage3_records,
+            annotated_docs,
+            strict=True,
+        ):
+            record_result = extract_raw_concepts_from_stage3_record(
+                stage3_record.to_dict(),
+                object_lookup=fake_object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
+            )
+            doc_result = extract_raw_concepts_from_doc(
+                annotated.caption_id,
+                annotated.doc,
+                object_lookup=fake_object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
+            )
 
-        self.assertEqual(
-            [mention.to_dict() for mention in doc_result.raw_mentions],
-            [mention.to_dict() for mention in record_result.raw_mentions],
-        )
-        self.assertEqual(
-            [edge.to_dict() for edge in doc_result.raw_edges],
-            [edge.to_dict() for edge in record_result.raw_edges],
-        )
+            self.assertEqual(
+                [mention.to_dict() for mention in doc_result.raw_mentions],
+                [mention.to_dict() for mention in record_result.raw_mentions],
+            )
+            self.assertEqual(
+                [edge.to_dict() for edge in doc_result.raw_edges],
+                [edge.to_dict() for edge in record_result.raw_edges],
+            )
+
+        conj_attributes = [
+            mention.text
+            for mention in record_result.raw_mentions
+            if mention.mention_type == "attribute"
+        ]
+        self.assertIn("light blue", conj_attributes)
+        self.assertNotIn("blue", conj_attributes)
 
 
 def _edge_sig(edges: list[dict[str, object]]) -> set[tuple[object, object, object]]:
     return {(edge["edge_type"], edge["label"], edge["rule_id"]) for edge in edges}
+
+
+def _attribute_mwe_row(surface: str, *, token_count: int = 2) -> dict[str, str]:
+    return {
+        "span_key": surface,
+        "attribute_unit_type": "mwe",
+        "span_token_count": str(token_count),
+        "anchor_token_offset": str(token_count - 1),
+        "lookup_forms": surface,
+        "attribute_mwe_rule_version": ATTRIBUTE_MWE_RULE_VERSION,
+        "decision_status": "chosen",
+        "canonical_surface": surface.replace(" ", "_"),
+    }
+
+
+def _attribute_mwe_index(*surfaces: str) -> ResolvedAttributeMweIndex:
+    return ResolvedAttributeMweIndex(
+        {surface: _attribute_mwe_row(surface) for surface in surfaces}
+    )
 
 
 class FakeSynset:

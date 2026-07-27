@@ -64,6 +64,7 @@ function Assert-RunPythonArgsAllowed {
         $AllowedScripts = @(
             (Join-Path $Root "scripts\incident_gate.py"),
             (Join-Path $Root "scripts\run_background_job.py"),
+            (Join-Path $Root "scripts\run_report_server_operation.py"),
             (Join-Path $Root "scripts\run_mlxp_bash.py"),
             (Join-Path $Root "scripts\run_mlxp_probe_bash.py"),
             (Join-Path $Root "scripts\run_script_with_timeout.py"),

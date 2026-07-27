@@ -1324,3 +1324,321 @@ The follow-up live remote `--pod-prefix prod-rsv-snu14ksh-` check could not be
 executed in this Codex turn because the sandbox escalation reviewer rejected
 the WSL/kubectl command due to usage-limit exhaustion. Do not treat that as a
 pipeline failure; it means the remote verification command was not started.
+
+## 2026-07-24: Report Server Launch Was Observed As A Foreground Wait
+
+### What Failed
+
+A local 1M report restart was invoked through `cmd.exe /c call` and remained
+shown as a running command even though a report server is intended to outlive
+its launcher. The generated batch used the managed launcher, but there was no
+independent outer deadline around the complete manager operation, and direct
+foreground report-server entry points were still executable through the
+generic bounded script runner.
+
+### Why It Happened
+
+The workflow had bounded readiness probes inside `manage_report_server.py`, but
+it did not enforce bounded lifetime at every report-server entry point. A
+long-lived service and a one-shot control command were therefore still easy to
+mix at the shell boundary.
+
+### Durable Guard
+
+- `scripts/run_report_server_operation.py` is now the only supported
+  report-server controller. It places an outer hard deadline around manager
+  `start`, `status`, and `stop` operations.
+- On an outer timeout it stops the manager process tree, stops a server PID
+  recorded during that operation, records an incident, and exits with code 124.
+- Generated launch batches use the bounded controller.
+- The generic timeout runner rejects `report_server.py` and
+  `launch_packaged_interactive_report.py` as foreground service targets.
+- `AGENTS.md` records the required start/status/stop protocol.
+
+### Verification
+
+The bounded regression suite passed:
+
+```text
+.\scripts\run_tests.ps1 --pytest --timeout-seconds 180 \
+  tests\test_run_report_server_operation.py \
+  tests\test_manage_report_server.py \
+  tests\test_run_script_with_timeout.py
+15 passed in 0.33s
+```
+
+The suite includes a simulated manager timeout that stops both the manager and
+recorded server process trees and creates an incident. A live bounded `status`
+operation also returned successfully for the local 1M report server on port
+8765 with PID 72948 and `ready=true`.
+
+## 2026-07-24: Ad-Hoc Multi-Step SSH Probe Failed During Local Quoting
+
+### What Failed
+
+A Blackwell preflight combined `hostname`, `stat`, and listener inspection in
+one quoted SSH command. PowerShell, WSL Bash, and the remote shell each parsed
+the string, and local quoting failed before any remote command ran.
+
+### Why It Happened
+
+The repository already required multi-step remote work to be written as a
+checked `.sh` file, uploaded with SCP, and invoked with one simple SSH command.
+That rule was documented but not enforced by the password SSH helper.
+
+### Durable Guard
+
+- `scripts/ssh_command_policy.py` rejects SSH arguments containing shell
+  sequencing, pipes, command substitution, or newlines.
+- `scripts/run_password_ssh_pty.py` applies the policy before creating a PTY.
+- SCP remains allowed so a checked remote script can be uploaded normally.
+
+### Verification
+
+`tests/test_ssh_command_policy.py` passed three policy tests. The corrected
+Blackwell probe was uploaded as a script and returned the expected DB path,
+22,142,185,472-byte size, and port 8770 listener.
+
+## 2026-07-24: Legacy Caption Index Collapsed Attribute And Quantity Kinds
+
+### What Failed
+
+The legacy Blackwell 1M report stored separate report rows for ordinary
+attributes and quantities, but its older caption-index key omitted
+`attribute_kind`. Labels such as `3` therefore pointed at the wrong caption set
+when the row caption panel was opened. Attribute-object pair rows had the same
+kind-collision risk.
+
+### Why It Happened
+
+The report rows had already been upgraded to include `attribute_kind`, while
+the older caption index had been built with only the visible semantic label.
+Updating count rows without rebuilding the corresponding kind-aware index left
+the UI metadata and caption lookup at different schema versions.
+
+### Durable Guard
+
+- `scripts/build_report_caption_index_from_facts.py` uses
+  `(canonical_attribute, attribute_kind)` and
+  `(object, attribute, attribute_kind)` keys.
+- `scripts/merge_legacy_quantity_into_interactive_report.py` deletes and
+  rebuilds every target quantity index on each run, making migration
+  convergent.
+- `scripts/reconcile_report_caption_index_kind_collisions.py` exports exact
+  caption IDs for every colliding kind row from a verified source DB and
+  applies them transactionally to another report DB.
+- Apply is refused when source index counts, patch counts, or remote
+  `caption_count` values disagree.
+
+### Verification
+
+- Local export: 790 target rows and 341,197 caption IDs; every source target
+  satisfied `caption_count == index_count`.
+- Patch SHA-256:
+  `448cecfb36d2f68e3bf6985917dcf87ee6991b3683b078ede53c225e8ade18d8`.
+- Blackwell apply: 341,079 old index rows removed and 341,197 exact rows
+  inserted in one transaction.
+- HTTP verification on port 8770:
+  ordinary attribute `3` returned 6 captions and quantity `3` returned
+  157 captions.
+
+### Test Isolation Follow-Up
+
+A later combined regression run exposed two test-isolation defects. The first
+version reused a deterministic repo-local `.tmp_tests/<test-id>` directory and
+suppressed cleanup errors. After switching to a unique directory, Windows
+showed the actual lock: `with sqlite3.connect(...)` commits or rolls back the
+transaction but does not close the connection object. The test now uses a
+unique `tempfile.mkdtemp()` directory, wraps every SQLite connection with
+`contextlib.closing()`, and does not suppress cleanup errors. This guarantees
+that a completed test releases its DB handles before teardown.
+
+The final combined bounded regression run passed:
+
+```text
+24 passed in 0.85s
+```
+
+## 2026-07-26: First 1M Attribute MWE Rollout Verification Blocked
+
+### What Failed
+
+The first formal 1M Attribute MWE verification returned nonzero and blocked
+publication. It reported quantity-table differences, inventory/Stage 4 MWE
+count differences, and two `stained glass window` Stage 5 raw fallbacks.
+
+### Why It Happened
+
+- The verifier compared raw mention text with inventory `span_key`.
+- The baseline predated unified `attribute_kind` tables and stored quantity in
+  `quantity_counts.tsv` and `object_quantity_pair_counts.tsv`.
+- Stage 4 used separator-equivalent MWE matching, while Stage 5 exported only
+  the literal inventory spelling.
+- Final resolved MWE aliases matched 19 additional prefix occurrences beyond
+  the pre-resolution OEWN discovery count.
+
+### Durable Guard
+
+- Verification keys MWE occurrences by
+  `source_detail.inventory_span_key`.
+- Legacy and unified quantity tables are normalized to the same semantic row
+  schema before comparison.
+- Stage 5 exports separator-equivalent keys for MWE inventory rows.
+- A post-Stage 4 recounter replaces chosen MWE count and evidence fields from
+  the emitted full-prefix mentions. It blocks unknown keys, duplicates, stale
+  rule versions, and zero-occurrence chosen rows.
+- Verifier output is phase-marked and count mismatches report bounded deltas
+  instead of printing the complete inventory.
+
+### Verification
+
+The targeted local regression suite passed `70` tests. Remote validation and
+the replacement 1M run remain required before this incident is considered
+fully resolved.
+# 2026-07-26: DDN Persistence Was Launched Through A 10-Second Tool Timeout
+
+## What happened
+
+The verified Attribute MWE 1M Stage 4-6 result was being copied from MLXP NVMe
+to DDN. The remote persistence script was correctly foreground and resumable,
+but the Codex desktop invocation used `shell_command` with a 10-second tool
+timeout. The local `kubectl exec` connection was terminated while `rsync` was
+still copying, and the guarded MLXP runner opened an incident.
+
+## Root cause
+
+The repository already prohibited a wall-clock kill for formal MLXP work, but
+the runbook did not explicitly distinguish the Codex tool's own short timeout
+from the repository timeout wrapper. The correct remote script was therefore
+launched through the wrong desktop execution primitive.
+
+## Permanent guard
+
+- `AGENTS.md` now requires formal or bulk-copy MLXP work to run in a yielding
+  exec cell and to be monitored by resuming that same cell.
+- Such work must not use a short/default `shell_command` timeout.
+- The DDN persistence script writes only to `.stage456_1m_v4.partial`, supports
+  an `rsync` resume, requires a zero-difference dry-run and verification hash,
+  and only then atomically renames the directory to its final name.
+- The incident gate blocks the retry until this root cause and guard are
+  recorded.
+
+## Verification required before clearing
+
+- Confirm the new `AGENTS.md` rule is present.
+- Confirm the persistence script contains the partial directory, rsync
+  dry-run, verification SHA check, and final rename in that order.
+- Resume the same partial transfer through a yielding exec cell.
+
+# 2026-07-26: Completed DDN Persistence Was Retried As A Failure
+
+## What happened
+
+The first local `kubectl exec` connection ended with return code 13, but the
+remote rsync continued and completed the persistence transaction. The final DDN
+directory existed with the expected verification SHA and no partial directory.
+The next invocation still required the final directory to be absent, so it
+exited 1 before reporting the already-complete state.
+
+## Root cause
+
+The persistence transaction was resumable before promotion but was not
+idempotent after promotion. A lost local connection could therefore turn a
+successful remote completion into a misleading retry failure.
+
+## Permanent guard
+
+The persistence script now checks the final directory first. If the partial
+directory is absent and the final verification SHA matches the fixed expected
+SHA, it refreshes the latest pointer, reports `persist_status=already_complete`,
+and exits successfully. Any final/partial conflict or hash mismatch still
+fails.
+
+## Verification
+
+The bounded read-only MLXP probe reported:
+
+- `partial_exists=no`
+- `final_exists=yes`
+- final verification SHA
+  `7bed1e56bfac3d8f36227691057c659642e1cc0d3551b03926371f91e9d47df6`
+- no active rsync process
+
+# 2026-07-26: Attribute MWE Report Used A Stale Remote Code Clone
+
+## What happened
+
+The verified Attribute MWE Stage 4-6 output was correct, but the first new 1M
+interactive report was built from
+`/root/work/attribute_mwe_rollout_20260726/repo_candidate`. That clone predated
+the unified attribute/quantity report schema. The base report therefore omitted
+`attribute_kind`, and caption indexing collapsed rows that shared a label across
+the two kinds.
+
+The caption-index stream completed 167,455,656 rows before top-row validation
+blocked the report. Five high-frequency rows had `index_count=0`; examples were
+`several`, `one`, `orange`, `three`, and `four`. The Stage 4-6 data and current
+inventory were not modified.
+
+## Root cause
+
+The Stage 4-6 candidate pinned inventory and lexicon hashes but did not pin the
+report-building source code. Report scripts were taken from a mutable Git clone,
+so the data snapshot and report schema implementation came from different
+versions.
+
+## Permanent guard
+
+- `build_report_caption_index_from_facts.py` and the direct Stage 5 index
+  builder now validate every report key column before dropping or creating the
+  caption index.
+- Missing `attribute_kind` fails before any index mutation.
+- Formal MLXP report builds must use an immutable local `scripts/` + `src/`
+  snapshot with a SHA-256 manifest and pinned hashes for the base builder,
+  caption-index key builder, Stage 5 index builder, and validator.
+- The final validator supports `--check-all-caption-counts`; mismatches from
+  either top-N or all-row validation produce a nonzero exit.
+- The stale v4 report remains untouched as incident evidence. The replacement
+  report is built in a fresh v5 directory.
+
+## Verification
+
+- Caption-index key/schema and report-validator regression tests: `9 passed`.
+- Snapshot archive SHA-256:
+  `59bb462bf437918d89f30c65fe20180bcb0fb3c9750211d3ad1c4df8d655a232`.
+- Remote snapshot hash verification, clean v5 build, all-row caption-count
+  validation, and local report validation remain required before the incident
+  is fully closed.
+
+# 2026-07-26: PowerShell ZIP Was Not A Portable Linux Snapshot
+
+## What happened
+
+The first v5 code snapshot used `Compress-Archive`. Linux `unzip` extracted the
+files but returned exit code 1 because the ZIP entry names used Windows
+backslashes. `set -e` correctly stopped before promoting the partial directory,
+so no v5 report build started.
+
+## Root cause
+
+The archive payload hashes were valid, but archive-path portability was not
+checked before Windows-to-Linux transfer.
+
+## Permanent guard
+
+- Formal Windows-to-Linux code snapshots use `tar.gz`, not PowerShell ZIP.
+- Archive entries are listed locally and any entry containing a backslash
+  blocks transfer.
+- Remote extraction uses a fresh `.partial` directory and only renames it after
+  the archive SHA, every manifest file hash, and the pinned report-script hashes
+  pass.
+- The failed ZIP partial remains separate from the portable snapshot path and
+  is never reused.
+
+## Verification
+
+- Portable archive entry count: `229`; backslash entries: `0`.
+- Portable archive SHA-256:
+  `556c8e920d8d8600be05b98361cb0caf8b9cf485c7c5f7efeda97a47e33f4365`.
+- Remote extraction and manifest verification remain required before this
+  incident is cleared.

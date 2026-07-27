@@ -16,11 +16,11 @@ SEPARATOR = "\x1f"
 
 VIEW_KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "objects": ("canonical_object",),
-    "attributes": ("canonical_attribute",),
+    "attributes": ("canonical_attribute", "attribute_kind"),
     "actions": ("canonical_action",),
     "relations": ("source_object", "relation", "target_object"),
     "object_cooccurrence": ("source_object", "target_object"),
-    "attribute_object_pairs": ("object", "attribute"),
+    "attribute_object_pairs": ("object", "attribute", "attribute_kind"),
     "patient_action_pairs": ("patient_object", "action"),
     "agent_action_pairs": ("agent_object", "action"),
     "patient_action_agent_triples": ("patient_object", "action", "agent_object"),
@@ -80,6 +80,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         conn.execute("PRAGMA journal_mode=OFF")
         conn.execute("PRAGMA synchronous=OFF")
         conn.execute("PRAGMA temp_store=MEMORY")
+        _validate_view_key_schema(conn, selected_views)
         _prepare_index_table(conn, overwrite=args.overwrite)
         row_maps = _load_row_maps(conn, selected_views)
         summary = _stream_facts_into_index(
@@ -149,10 +150,58 @@ def _load_row_maps(
         mapping: dict[str, int] = {}
         for row in conn.execute(f"SELECT {select_columns} FROM {_q(view)}"):
             row_id = int(row[0])
-            key = _key(*(str(value or "") for value in row[1:]))
-            mapping[key] = row_id
+            values = tuple(str(value or "") for value in row[1:])
+            for key in _row_keys(view, values):
+                existing_row_id = mapping.get(key)
+                if existing_row_id is not None and existing_row_id != row_id:
+                    raise ValueError(
+                        "duplicate report caption-index key: "
+                        f"view={view!r}, key={key!r}, "
+                        f"row_ids=({existing_row_id}, {row_id})",
+                    )
+                mapping[key] = row_id
         row_maps[view] = mapping
     return row_maps
+
+
+def _validate_view_key_schema(
+    conn: sqlite3.Connection,
+    selected_views: set[str],
+) -> None:
+    for view, required_columns in VIEW_KEY_COLUMNS.items():
+        if view not in selected_views or not _table_exists(conn, view):
+            continue
+        actual_columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({_q(view)})").fetchall()
+        }
+        missing = [
+            column for column in required_columns if column not in actual_columns
+        ]
+        if missing:
+            raise ValueError(
+                "report caption-index key schema is stale: "
+                f"view={view!r}, missing_columns={missing!r}. "
+                "Rebuild the base report with the same code snapshot as the "
+                "caption-index builder before indexing.",
+            )
+
+
+def _row_keys(view: str, values: tuple[str, ...]) -> tuple[str, ...]:
+    if view not in {"attributes", "attribute_object_pairs"}:
+        return (_key(*values),)
+    if not values:
+        return ()
+    kinds = tuple(
+        sorted(
+            {
+                kind.strip()
+                for kind in values[-1].split("|")
+                if kind.strip()
+            },
+        ),
+    ) or ("attribute",)
+    return tuple(_key(*values[:-1], kind) for kind in kinds)
 
 
 def _stream_facts_into_index(
@@ -260,9 +309,16 @@ def _add_simple_fact_index(fact: Mapping[str, Any], add: Any) -> None:
     if fact_type == "entity_exists":
         add("objects", _key(values.get("object")), caption_id)
     elif fact_type == "attribute_exists":
-        add("attributes", _key(values.get("attribute")), caption_id)
+        add(
+            "attributes",
+            _key(
+                values.get("attribute"),
+                values.get("attribute_kind") or "attribute",
+            ),
+            caption_id,
+        )
     elif fact_type == "quantity_exists":
-        add("attributes", _key(values.get("quantity")), caption_id)
+        add("attributes", _key(values.get("quantity"), "quantity"), caption_id)
     elif fact_type == "action_event":
         add("actions", _key(values.get("action")), caption_id)
     elif fact_type == "relation":
@@ -280,13 +336,17 @@ def _add_simple_fact_index(fact: Mapping[str, Any], add: Any) -> None:
     elif fact_type == "has_attribute":
         add(
             "attribute_object_pairs",
-            _key(values.get("object"), values.get("attribute")),
+            _key(
+                values.get("object"),
+                values.get("attribute"),
+                values.get("attribute_kind") or "attribute",
+            ),
             caption_id,
         )
     elif fact_type == "has_quantity":
         add(
             "attribute_object_pairs",
-            _key(values.get("object"), values.get("quantity")),
+            _key(values.get("object"), values.get("quantity"), "quantity"),
             caption_id,
         )
     elif fact_type == "relation_component":

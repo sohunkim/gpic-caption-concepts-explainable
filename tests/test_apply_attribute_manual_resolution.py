@@ -104,6 +104,105 @@ class ApplyAttributeManualResolutionTest(unittest.TestCase):
             self.assertIn("manual_resolution_key_mismatch", str(caught.exception))
             self.assertIn("overall", str(caught.exception))
 
+    def test_same_surface_single_and_mwe_rows_use_composite_key(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            full = root / "full.tsv"
+            resolved = root / "resolved.tsv"
+            output = root / "merged.tsv"
+            _write_tsv(
+                full,
+                [
+                    {
+                        "span_key": "light brown",
+                        "attribute_unit_type": "single_token",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "single-synset",
+                    },
+                    {
+                        "span_key": "light brown",
+                        "attribute_unit_type": "mwe",
+                        "decision_status": "needs_manual",
+                    },
+                ],
+                extra_fieldnames=["attribute_unit_type"],
+            )
+            _write_tsv(
+                resolved,
+                [
+                    {
+                        "span_key": "light brown",
+                        "attribute_unit_type": "mwe",
+                        "decision_status": "chosen",
+                        "selected_oewn_synset": "mwe-synset",
+                    }
+                ],
+                extra_fieldnames=["attribute_unit_type"],
+            )
+
+            script.apply_attribute_manual_resolution(
+                full_inventory_path=full,
+                resolved_subset_path=resolved,
+                output_path=output,
+            )
+
+            rows = _read_tsv(output)
+            self.assertEqual(rows[0]["selected_oewn_synset"], "single-synset")
+            self.assertEqual(rows[1]["selected_oewn_synset"], "mwe-synset")
+
+    def test_rejected_row_becomes_excluded_and_clears_selected_synset(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_safe_temp_base()) as tmp:
+            root = Path(tmp)
+            full = root / "full.tsv"
+            resolved = root / "resolved.tsv"
+            output = root / "merged.tsv"
+            _write_tsv(
+                full,
+                [
+                    {
+                        "span_key": "small white",
+                        "attribute_unit_type": "mwe",
+                        "decision_status": "needs_manual",
+                        "selected_oewn_synset": "butterfly-synset",
+                    }
+                ],
+                extra_fieldnames=[
+                    "attribute_unit_type",
+                    "selected_oewn_lexfile",
+                    "synset_lemmas",
+                ],
+            )
+            _write_tsv(
+                resolved,
+                [
+                    {
+                        "span_key": "small white",
+                        "attribute_unit_type": "mwe",
+                        "decision_status": "rejected",
+                        "selected_oewn_synset": "butterfly-synset",
+                        "selected_oewn_lexfile": "noun.animal",
+                        "synset_lemmas": "small white|Pieris rapae",
+                    }
+                ],
+                extra_fieldnames=[
+                    "attribute_unit_type",
+                    "selected_oewn_lexfile",
+                    "synset_lemmas",
+                ],
+            )
+
+            script.apply_attribute_manual_resolution(
+                full_inventory_path=full,
+                resolved_subset_path=resolved,
+                output_path=output,
+            )
+
+            row = _read_tsv(output)[0]
+            self.assertEqual(row["decision_status"], "excluded")
+            self.assertEqual(row["selected_oewn_synset"], "")
+            self.assertEqual(row["selected_oewn_lexfile"], "")
+            self.assertEqual(row["synset_lemmas"], "")
+
 
 def _write_tsv(
     path: Path,

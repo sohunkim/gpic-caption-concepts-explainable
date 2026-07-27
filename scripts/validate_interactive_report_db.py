@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import sqlite3
 from collections.abc import Iterable
@@ -16,6 +17,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--summary-json", type=Path)
     parser.add_argument("--require-caption-index", action="store_true")
     parser.add_argument("--check-top-caption-counts", type=int, default=0)
+    parser.add_argument("--check-all-caption-counts", action="store_true")
     parser.add_argument("--min-patient-action-agent-triples", type=int, default=0)
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -25,7 +27,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not args.report_db.exists():
         raise SystemExit(f"missing report DB: {args.report_db}")
     errors: list[str] = []
-    with sqlite3.connect(args.report_db) as conn:
+    with closing(sqlite3.connect(args.report_db)) as conn:
         conn.row_factory = sqlite3.Row
         views = _load_views(conn)
         for view in views:
@@ -58,6 +60,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         has_caption_index = _table_exists(conn, "report_caption_index")
         if args.require_caption_index and not has_caption_index:
             errors.append("report_caption_index is required but missing")
+        if args.require_caption_index and has_caption_index:
+            caption_index_metadata = conn.execute(
+                "SELECT value FROM metadata "
+                "WHERE key = 'report_caption_index_summary'",
+            ).fetchone()
+            if caption_index_metadata is None:
+                errors.append(
+                    "metadata key 'report_caption_index_summary' is required but missing",
+                )
 
         if args.min_patient_action_agent_triples:
             if not _table_exists(conn, "patient_action_agent_triples"):
@@ -76,17 +87,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                     )
 
         caption_mismatches: list[dict[str, Any]] = []
-        if has_caption_index and args.check_top_caption_counts > 0:
+        if has_caption_index and args.check_all_caption_counts:
+            caption_mismatches = _check_all_caption_counts(conn, views=views)
+        elif has_caption_index and args.check_top_caption_counts > 0:
             caption_mismatches = _check_top_caption_counts(
                 conn,
                 views=views,
                 limit=args.check_top_caption_counts,
             )
-            for mismatch in caption_mismatches:
-                errors.append(
-                    "{view} row_id={row_id}: caption_count={caption_count}, "
-                    "index_count={index_count}".format(**mismatch),
-                )
+        for mismatch in caption_mismatches:
+            errors.append(
+                "{view} row_id={row_id}: caption_count={caption_count}, "
+                "index_count={index_count}".format(**mismatch),
+            )
 
         result = {
             "report_db": str(args.report_db),
@@ -146,6 +159,41 @@ def _check_top_caption_counts(
                         "index_count": index_count,
                     },
                 )
+    return mismatches
+
+
+def _check_all_caption_counts(
+    conn: sqlite3.Connection,
+    *,
+    views: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for view in views:
+        name = str(view["name"])
+        if not _table_exists(conn, name):
+            continue
+        rows = conn.execute(
+            f"SELECT source._row_id, source.caption_count, "
+            "COALESCE(captions.index_count, 0) AS index_count "
+            f"FROM {_q(name)} AS source "
+            "LEFT JOIN ("
+            "SELECT row_id, COUNT(*) AS index_count "
+            "FROM report_caption_index WHERE view_name = ? GROUP BY row_id"
+            ") AS captions ON captions.row_id = source._row_id "
+            "WHERE CAST(COALESCE(source.caption_count, 0) AS INTEGER) "
+            "!= COALESCE(captions.index_count, 0) "
+            "ORDER BY source._row_id",
+            [name],
+        ).fetchall()
+        mismatches.extend(
+            {
+                "view": name,
+                "row_id": int(row["_row_id"]),
+                "caption_count": int(row["caption_count"] or 0),
+                "index_count": int(row["index_count"] or 0),
+            }
+            for row in rows
+        )
     return mismatches
 
 

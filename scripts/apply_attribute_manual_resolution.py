@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer
+from gpic_concepts_v1.attribute_units import inventory_attribute_key
 
 
 CANONICAL_FIELDS = frozenset(
@@ -27,6 +28,13 @@ CANONICAL_FIELDS = frozenset(
         "canonical_candidate_lemma_counts",
         "google_ngram_candidate_surfaces",
         "google_ngram_candidate_mean_frequencies",
+    )
+)
+SELECTED_SYNSET_FIELDS = frozenset(
+    (
+        "selected_oewn_synset",
+        "selected_oewn_lexfile",
+        "synset_lemmas",
     )
 )
 
@@ -78,8 +86,8 @@ def apply_attribute_manual_resolution(
     if not fieldnames:
         raise ValueError(f"full inventory has no header: {full_inventory_path}")
 
-    full_by_key = _unique_by_span_key(full_rows, "full inventory")
-    resolved_by_key = _unique_by_span_key(resolved_rows, "resolved subset")
+    full_by_key = _unique_by_inventory_key(full_rows, "full inventory")
+    resolved_by_key = _unique_by_inventory_key(resolved_rows, "resolved subset")
     missing = sorted(key for key in resolved_by_key if key not in full_by_key)
     if missing:
         raise ValueError(
@@ -87,7 +95,7 @@ def apply_attribute_manual_resolution(
         )
 
     needs_manual_keys = {
-        row.get("span_key", "")
+        inventory_attribute_key(row)
         for row in full_rows
         if row.get("decision_status", "").strip() == "needs_manual"
     }
@@ -108,18 +116,22 @@ def apply_attribute_manual_resolution(
     fieldnames = _merged_fieldnames(fieldnames, list(resolved_rows[0].keys()) if resolved_rows else [])
     merged_rows: list[dict[str, str]] = []
     for row in full_rows:
-        key = row.get("span_key", "")
+        key = inventory_attribute_key(row)
         if key not in resolved_by_key:
             merged_rows.append({field: row.get(field, "") for field in fieldnames})
             continue
         replacement = {field: row.get(field, "") for field in fieldnames}
         resolved = resolved_by_key[key]
+        resolved_status = _normalize_resolved_status(resolved.get("decision_status", ""))
         for field in fieldnames:
             if field in CANONICAL_FIELDS:
                 replacement[field] = ""
                 continue
+            if resolved_status == "excluded" and field in SELECTED_SYNSET_FIELDS:
+                replacement[field] = ""
+                continue
             if field == "decision_status":
-                replacement[field] = _normalize_resolved_status(resolved.get(field, ""))
+                replacement[field] = resolved_status
                 continue
             replacement[field] = resolved.get(field, row.get(field, ""))
         merged_rows.append(replacement)
@@ -190,26 +202,30 @@ def _normalize_resolved_status(value: str) -> str:
     status = value.strip()
     if status in {"accepted", "chosen", "selected"}:
         return "chosen"
-    if status in {"excluded", "needs_manual"}:
+    if status in {"excluded", "rejected"}:
+        return "excluded"
+    if status == "needs_manual":
         return status
     raise ValueError(f"unsupported resolved attribute decision_status: {value!r}")
 
 
-def _unique_by_span_key(
+def _unique_by_inventory_key(
     rows: list[dict[str, str]],
     label: str,
-) -> dict[str, dict[str, str]]:
-    by_key: dict[str, dict[str, str]] = {}
-    duplicates: set[str] = set()
+) -> dict[tuple[str, str], dict[str, str]]:
+    by_key: dict[tuple[str, str], dict[str, str]] = {}
+    duplicates: set[tuple[str, str]] = set()
     for row in rows:
-        key = row.get("span_key", "")
-        if not key:
+        if not row.get("span_key", ""):
             raise ValueError(f"{label} has a row without span_key")
+        key = inventory_attribute_key(row)
         if key in by_key:
             duplicates.add(key)
         by_key[key] = row
     if duplicates:
-        raise ValueError(f"{label} has duplicate span_key rows: {sorted(duplicates)[:20]}")
+        raise ValueError(
+            f"{label} has duplicate attribute inventory keys: {sorted(duplicates)[:20]}"
+        )
     return by_key
 
 

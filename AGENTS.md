@@ -106,6 +106,14 @@ Preferred remote execution patterns:
   foreground. The local `<script.sh>` must be written with ASCII or UTF-8
   without BOM. Do not pipe ad hoc PowerShell here-strings directly into
   `wsl ... kubectl exec ... bash`.
+- In the Codex desktop tool environment, do not launch a formal or bulk-copy
+  `run_mlxp_bash.py` command through a `shell_command` call that retains the
+  tool's short/default timeout. Launch it as a yielding exec cell with a
+  practically non-expiring tool timeout, then resume that same cell with
+  `wait`. The repository command must remain foreground and unbounded; the
+  cell is the monitor. A partial DDN transfer must write to a resumable
+  `.partial` directory and may be promoted only after a no-difference rsync
+  dry-run and required artifact hash checks.
 - Do not run `scripts\run_script_with_timeout.py`,
   `scripts\run_mlxp_bash.py`, `scripts\run_mlxp_probe_bash.py`, or
   `scripts\incident_gate.py run` in `multi_tool_use.parallel`. They share the
@@ -179,6 +187,29 @@ return exit code `1` even when authentication succeeds because it does not
 provide shell access. Use `git ls-remote` against the intended SSH repository
 URL as the guarded verification, or capture and interpret the `ssh -T` message
 without letting its nonzero exit fail the official run.
+
+For local-to-MLXP or MLXP-to-local code handoff, GitHub is the default path for
+code, tests, documentation, and small versioned inventory files. Large data,
+report DBs, generated outputs, and transfer packages still move by explicit
+archive/copy with SHA-256 verification and must not be committed just to make a
+handoff convenient.
+
+Before a formal remote run from MLXP:
+
+- commit the intended local code on a scoped branch and push it
+- clone/fetch that branch on MLXP into a fresh or intentionally selected
+  checkout, then checkout the exact commit SHA
+- verify the remote checkout with:
+
+  `python scripts/verify_git_handoff.py --repo <remote_repo> --expected-commit <40-char-sha> --require-clean`
+
+- record the verified commit SHA in the run summary, benchmark note, transfer
+  manifest, or user-facing report
+
+Do not run a formal MLXP pipeline from a dirty local worktree, a dirty remote
+checkout, or an unverified mutable clone. If GitHub access is unavailable, the
+fallback is an explicit immutable code snapshot with a manifest and a written
+reason for not using GitHub; do not silently mix the two handoff modes.
 
 If any command unexpectedly reports a Windows path, the conversation default
 workspace, or a local WSL path while the intended target was MLXP, stop
@@ -777,6 +808,28 @@ rerun a test. First inspect for stale project `python.exe` or PowerShell
 processes, stop only the stale processes that belong to the interrupted command,
 and record the root cause if it affects future work.
 
+### Long-Lived Report Server Safety
+
+Never run `report_server.py`,
+`scripts/launch_packaged_interactive_report.py`, or another
+`serve_forever()` entry point as a foreground repository command. A report
+server is a long-lived service, so process completion is not a valid readiness
+condition.
+
+Use only `scripts/run_report_server_operation.py` for report-server control:
+
+- `start` launches through `manage_report_server.py`, waits only for bounded
+  health readiness, then returns while the detached server continues
+- `status` performs one bounded health/process check and returns
+- `stop` performs one bounded shutdown and returns
+
+Every `start` call must supply both a positive outer
+`--operation-timeout-seconds` and a shorter positive inner
+`--readiness-timeout-seconds`. Generated report launchers must use this
+controller. Do not invoke a generated `.bat` through an unbounded
+`cmd.exe /c call` command; either run the controller directly or give the shell
+command a timeout longer than the controller's outer deadline.
+
 For test temp paths in this repository, avoid `Path.resolve()` when deriving a
 repo-local temp directory. This repo can be opened through a junction/link, and
 `resolve()` may silently switch from the logical Codex path to the OneDrive
@@ -834,6 +887,33 @@ change.
 ### Generated Report Summary Sync
 
 Do not treat Markdown report summaries as self-validating.
+
+### Remote Report Code Snapshots
+
+Do not build a formal remote interactive report from a mutable or previously
+cloned repository checkout. Inventory/data hashes do not prove that report
+schema and caption-index code are current.
+
+For formal MLXP report builds:
+
+- package the local `scripts/` and `src/` trees as an immutable code snapshot
+  with a SHA-256 manifest
+- use a portable tar archive for Windows-to-Linux snapshots and reject archive
+  entry names containing backslashes before transfer
+- copy and verify that snapshot on the pod before creating the base report
+- run base-report, caption-index, validation, and packaging commands from that
+  same extracted snapshot
+- pin and check the hashes of
+  `build_interactive_count_report.py`,
+  `build_report_caption_index_from_facts.py`,
+  `build_report_caption_index_from_stage5.py`, and
+  `validate_interactive_report_db.py`
+- require the report DB to contain every `VIEW_KEY_COLUMNS` column before
+  dropping or rebuilding an existing caption index
+- use `--check-all-caption-counts` for the final formal report validation
+
+If the code snapshot or DB key schema differs, stop before caption indexing.
+Do not repair the mismatch by silently falling back to a mutable clone.
 
 This is not a requirement to scan every old report on every task. Apply it when
 a report is being edited, cited as current evidence, or naturally discovered to

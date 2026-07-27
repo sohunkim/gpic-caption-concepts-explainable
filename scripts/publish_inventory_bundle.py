@@ -184,13 +184,29 @@ def _copy_pipeline_state(source: Path, target: Path, *, replacements: dict[str, 
 def _replace_tree(source_dir: Path, target_dir: Path) -> None:
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = target_dir.with_name(f".{target_dir.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    backup_dir = target_dir.with_name(
+        f".{target_dir.name}.{os.getpid()}.{uuid.uuid4().hex}.backup"
+    )
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     shutil.copytree(source_dir, temp_dir)
+    moved_existing = False
     if target_dir.exists():
         _assert_safe_replace_tree(target_dir)
-        shutil.rmtree(target_dir)
-    os.replace(temp_dir, target_dir)
+        os.replace(target_dir, backup_dir)
+        moved_existing = True
+    try:
+        os.replace(temp_dir, target_dir)
+    except Exception:
+        if moved_existing and backup_dir.exists() and not target_dir.exists():
+            os.replace(backup_dir, target_dir)
+        raise
+    else:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
+    finally:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 
 def _assert_safe_replace_tree(path: Path) -> None:

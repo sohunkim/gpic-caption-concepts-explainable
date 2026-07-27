@@ -558,6 +558,8 @@ def _execute_decision(config: WorkflowConfig, decision: WorkflowDecision) -> Non
             config.stage3_records,
             "--object-inventory",
             config.object_inventory,
+            "--preposition-mwe-lexicon",
+            config.preposition_mwe_lexicon,
             "--output",
             paths.attribute_inventory,
             "--summary",

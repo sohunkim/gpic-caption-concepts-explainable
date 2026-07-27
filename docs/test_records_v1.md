@@ -5220,3 +5220,69 @@ Object inventory prior-bundle guard, 2026-07-13:
   - Published row counts:
     `object=1788`, `attribute=773`, `action=563`,
     `action_canonical=563`.
+## 2026-07-26: Attribute MWE Prefix Lexicon Replacement Regression
+
+- Failure:
+  - The 1M Attribute MWE lexicon export stopped on
+    `wood grain -> woodgrain / wood grain`.
+- Root cause:
+  - The 10K base lexicon retained an older
+    `gpic_observed_attribute_inventory` MWE mapping.
+  - The approved 1M MWE rescan recomputed the same raw key under the current
+    no-joined-separator canonical rule, but the exporter treated the stale
+    same-source row as immutable base data.
+- Guard:
+  - For raw keys present in the current MWE inventory, Stage 5 export removes
+    prior `gpic_observed_attribute_inventory` synonym rows and regenerates them
+    from the current inventory.
+  - Manual or external source conflicts still block export.
+- Verification:
+  - Command:
+    `.\scripts\run_tests.ps1 discover -s tests -p test_export_attribute_stage5_lexicons.py`
+  - Result: `5 tests passed`.
+  - Added regressions cover same-source stale MWE replacement and preservation
+    of the external-source conflict gate.
+
+## 2026-07-26: Attribute MWE Exact Surface Precedes Morphy Alias
+
+- The 1M Stage 4/5/6 candidate stopped before extraction because
+  `red carpeted` advertised the Morphy alias `red carpet`, while a distinct
+  exact `red carpet` MWE row owned that same form.
+- Root cause: the runtime matcher registered exact observed forms and generated
+  aliases in one namespace with equal precedence.
+- Structural fix: build the matcher in two passes. Exact observed forms are
+  registered first; aliases may fill only unowned keys. Alias-to-alias
+  conflicts remain fatal.
+- Added tests for exact ownership and for a genuine unresolved alias conflict.
+
+## 2026-07-26: Streaming Attribute MWE Rollout Verifier
+
+- Added sharded-path and streaming caption-group regressions to
+  `tests/test_verify_attribute_mwe_rollout.py`.
+- Targeted command:
+  `.\scripts\run_tests.ps1 --pytest --timeout-seconds 600
+  tests\test_verify_attribute_mwe_rollout.py
+  tests\test_attribute_units.py
+  tests\test_export_attribute_stage5_lexicons.py
+  tests\test_stage4_extract_raw.py`
+- Result: `67 passed`.
+- The verifier reads direct and sharded Stage 4/5 artifacts without loading
+  the full JSONL corpus into memory.
+
+## 2026-07-26: Attribute MWE 1M Verification Failure Guards
+
+- The first 1M candidate verification correctly blocked publication.
+- Diagnosed failures:
+  - raw mention text was compared with inventory `span_key`;
+  - the legacy baseline stored quantity in separate Stage 6 tables;
+  - Stage 4 separator-equivalent matching was broader than Stage 5 synonym
+    export;
+  - resolved variants added 19 valid Stage 4 occurrences beyond discovery
+    counts, requiring a post-resolution evidence recount.
+- Added regressions for:
+  - separator-equivalent Stage 5 MWE synonym export;
+  - Stage 4 recount keyed by `inventory_span_key`;
+  - unknown-key recount blocking;
+  - unified/legacy quantity row normalization;
+  - sharded streaming verification.
+- Targeted result after the fixes: `70 passed`.

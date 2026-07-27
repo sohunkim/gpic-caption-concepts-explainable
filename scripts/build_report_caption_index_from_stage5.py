@@ -27,6 +27,7 @@ from build_report_caption_index_from_facts import (
     _load_row_maps,
     _prepare_index_table,
     _role_fact_from_event_role,
+    _validate_view_key_schema,
     _write_index_metadata,
     _write_progress,
 )
@@ -99,6 +100,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         conn.execute("PRAGMA journal_mode=OFF")
         conn.execute("PRAGMA synchronous=OFF")
         conn.execute("PRAGMA temp_store=MEMORY")
+        _validate_view_key_schema(conn, selected_views)
         _prepare_index_table(conn, overwrite=args.overwrite)
         row_maps = _load_row_maps(conn, selected_views)
         summary = _stream_stage5_into_index(

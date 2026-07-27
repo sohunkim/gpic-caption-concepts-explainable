@@ -6975,3 +6975,161 @@ Decision status:
 
 - Approved by user in chat on 2026-07-14 after repeated missing-evidence
   failures: local evidence TSV misses must trigger a fresh Google Ngram query.
+
+## 2026-07-24: R11.1 Attribute Inventory Conjunct Consistency Repair
+
+Proposed rule or lexicon change:
+
+- Repair the Stage 3.5 observed attribute inventory builder so it applies the
+  same same-noun-chunk conjunct expansion already implemented by Stage 4 R13.
+- A `conj` token becomes an inventory candidate only when it is reachable from
+  an accepted `amod`/`compound`/`nmod` modifier through the existing R13
+  conjunct traversal.
+- Reuse the Stage 4 record-path conjunct helper rather than maintaining a
+  second independent traversal.
+- Keep R14 quantity precedence in the inventory builder as well as Stage 4.
+- Add an attribute-candidate rule version to checkpoint metadata so a
+  pre-repair checkpoint cannot resume into a post-repair inventory.
+
+Rule generality classification:
+
+- Existing-rule implementation consistency repair.
+- This does not add global `conj` interpretation or a term-specific fallback.
+
+Target stage and rule id:
+
+- Stage 3.5 R11.1 observed attribute inventory lookup.
+- Aligns its candidate set with Stage 4 R13.
+
+Existing rules affected:
+
+- Implements the R11.1 conjunct behavior approved on 2026-07-11 but omitted
+  from `build_gpic_observed_attribute_inventory.py`.
+- R13 extraction semantics, OEWN lookup order, canonicalization, and Stage 6
+  aggregation are unchanged.
+
+Expected count-table impact:
+
+- After rebuilding and publishing the attribute inventory, conjunct attributes
+  that previously reached Stage 5 as raw fallback can receive their resolved
+  OEWN canonical mapping.
+- Attribute mention and edge occurrence counts do not increase solely from
+  this repair because R13 already emitted the conjunct mentions.
+
+False positive risk:
+
+- No new risk beyond the already approved R13 same-chunk conjunct expansion.
+- The traversal remains rooted at an accepted base modifier and excludes
+  consumed object-core and quantity tokens.
+
+False negative risk:
+
+- Cross-chunk coordination and conjuncts not reachable from an accepted base
+  modifier remain excluded.
+
+Reversibility:
+
+- Reversible by removing the shared conjunct expansion call from the inventory
+  builder and restoring the prior checkpoint rule version.
+
+Verification plan:
+
+- Add direct and chained conjunct inventory tests.
+- Verify quantity-like conjuncts remain excluded.
+- Audit current Stage 4 conjunct attribute mentions whose Stage 5
+  `canonical_source` is `raw_fallback`, then probe their surfaces against
+  OEWN 2025+.
+
+Decision status:
+
+- Approved by user in chat on 2026-07-24.
+
+Verification result:
+
+- `tests/test_build_gpic_observed_attribute_inventory.py` now covers direct
+  conjuncts, chained conjuncts, and quantity precedence.
+- `tests/test_audit_attribute_conj_inventory_coverage.py` covers the exact
+  Stage 5 synonym-key audit semantics.
+- Combined targeted test result: `20 passed`.
+- The existing 1M Stage 4 artifact contained 170,852 conjunct attribute
+  mentions across 4,591 normalized surfaces.
+- Current attribute synonyms covered 3,245 surfaces. The remaining 1,346
+  surfaces accounted for 2,400 raw-fallback mentions.
+- OEWN re-probing found synsets for 267 of those fallback surfaces
+  (417 mentions): 68 were auto-selectable and 199 remained `needs_manual`.
+- Audit artifacts:
+  `outputs/front1000000_gpic_nano_20260715/attribute_conj_inventory_coverage_20260724/`.
+## 2026-07-25: R11.1/R13/R20 OEWN Attribute MWE Support
+
+- Existing single-token attribute inventory rows remain authoritative and are
+  never replaced by a prefix snapshot.
+- Adds OEWN-valid contiguous multi-token attribute units to the same cumulative
+  attribute inventory under the composite key
+  `(attribute_unit_type, span_key)`.
+- Stage 3.5 and Stage 4 share one selector for object-core boundaries,
+  same-chunk conjunct branches, relation/quantity barriers, longest-span
+  selection, and local suppression of internal single attributes.
+- MWE lookup permits space/hyphen/underscore equivalence and anchor-only
+  Morphy. It forbids phrase-wide Morphy and joined separator removal.
+- Stage 4 formal runners require a resolved inventory with the current MWE
+  schema/rule version before extraction.
+- Stage 5 exports both single and MWE raw-to-canonical mappings and blocks
+  conflicting raw keys.
+- Prefix rollout updates only validated MWE rows. A larger prefix replaces
+  MWE count/evidence with its full-prefix rescan values instead of adding them.
+- Stage 5 treats the current MWE inventory as authoritative for MWE raw keys:
+  prior `gpic_observed_attribute_inventory` synonym rows for those keys are
+  removed and regenerated from the current inventory. Conflicts with manual or
+  external lexicon sources still block export.
+- Stage 4 registers exact observed MWE forms before generated lookup aliases.
+  `span_key`, `observed_surface`, and `example_surfaces` own their
+  separator-equivalent keys; Morphy/separator aliases from `lookup_forms`
+  cannot override an exact owner. Conflicting aliases without an exact owner
+  still block extraction.
+- Checkpoint schema/rule versions prevent reuse of pre-MWE checkpoints.
+- Expected Stage 6 changes are limited to attribute mentions,
+  `has_attribute`, attribute counts, and attribute-object pairs.
+
+## 2026-07-26: Attribute MWE Rollout Verification Must Stream Shards
+
+- Formal 1M Stage 4/5 output may be stored either directly under a stage
+  directory or under `shards/shard_*/stage4|stage5`.
+- The rollout verifier resolves both layouts and streams every JSONL file.
+  It must not materialize the complete 1M mention or edge corpus in RAM.
+- Only selected MWE mentions and their keys are retained for cross-stage
+  checks. Per-caption attribute rows are released after overlap validation.
+- Publication is blocked unless all non-attribute Stage 4 type counts and
+  non-attribute Stage 6 tables are unchanged, quantity rows are unchanged,
+  MWE mention counts match the prefix inventory, each attached MWE has exactly
+  one edge, and every MWE canonical mention is a lexicon hit.
+
+## 2026-07-26: Resolved Attribute MWE Evidence Recount
+
+- OEWN discovery and final lexicon application are separate passes.
+  A manually resolved MWE or separator-equivalent form can match additional
+  occurrences that the discovery pass could not yet associate with that row.
+- After formal Stage 4, chosen MWE `count`, `caption_count`,
+  `example_caption_ids`, `observed_surface`, and `example_surfaces` are
+  replaced from emitted MWE mentions keyed by
+  `source_detail.inventory_span_key`.
+- Recount is a full-prefix replacement, not an additive update. Existing
+  single-token and excluded MWE rows are not modified.
+- Unknown Stage 4 inventory keys, duplicate mention keys, unresolved rule
+  versions, and chosen MWE rows with zero Stage 4 mentions block the recount.
+
+## 2026-07-26: Attribute MWE Stage 4/5 Separator Contract
+
+- Stage 5 exports separator-equivalent raw keys for MWE rows using the same
+  normalization as the Stage 4 matcher.
+- This covers cases such as inventory `stained-glass window` matching the raw
+  Stage 4 surface `stained glass window`.
+- Existing/manual canonical conflicts continue to block lexicon export.
+
+## 2026-07-26: Legacy Quantity Baseline Normalization
+
+- Rollout verification compares current unified quantity rows against legacy
+  `quantity_counts.tsv` and `object_quantity_pair_counts.tsv` when the
+  baseline predates `attribute_kind`.
+- `count_key` and storage-table names are normalized away; semantic labels,
+  parents, counts, caption counts, examples, raw variants, and rule IDs remain
+  part of the equality check.

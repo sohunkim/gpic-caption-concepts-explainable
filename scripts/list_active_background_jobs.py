@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from run_background_job import process_is_running, read_progress_snapshot
+from run_background_job import process_matches_record, read_progress_snapshot
 
 
 COUNT_KEYS = (
@@ -85,7 +85,7 @@ def collect_jobs(root: Path) -> list[dict[str, Any]]:
             continue
 
         pid = int(record.get("pid", 0) or 0)
-        running = bool(pid and process_is_running(pid))
+        running, process_status, actual_started_at = process_matches_record(record)
         command = record.get("command", [])
         if isinstance(command, str):
             command = command.split()
@@ -100,6 +100,8 @@ def collect_jobs(root: Path) -> list[dict[str, Any]]:
                 "name": record.get("name", ""),
                 "pid": pid,
                 "running": running,
+                "process_status": process_status,
+                "actual_process_started_at_utc": actual_started_at,
                 "cwd": record.get("cwd", ""),
                 "started_at_utc": record.get("started_at_utc", ""),
                 "stdout": record.get("stdout", ""),

@@ -16,6 +16,15 @@ import os
 import re
 from typing import Any
 
+from gpic_concepts_v1.attribute_units import (
+    ATTRIBUTE_UNIT_MWE,
+    AttributeAnchor,
+    AttributeMweCandidate,
+    AttributeTokenView,
+    ResolvedAttributeMweIndex,
+    collect_attribute_anchors,
+    select_attribute_mwes,
+)
 from gpic_concepts_v1.io_jsonl import iter_jsonl, write_jsonl
 from gpic_concepts_v1.inventory_validation import (
     normalize_inventory_decision_status,
@@ -486,6 +495,7 @@ def extract_raw_concepts_from_stage3_record(
     stage3_record: Mapping[str, Any],
     *,
     object_lookup: Any | None = None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None = None,
     action_lookup: Any | None = None,
     preposition_mwe_lookup: _PrepositionMweIndex | Sequence[_PrepositionMweEntry] | None = None,
 ) -> RawExtractionResult:
@@ -507,6 +517,7 @@ def extract_raw_concepts_from_stage3_record(
                 builder,
                 stage3_record=stage3_record,
                 object_lookup=object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
                 children_by_head=children_by_head,
             )
         except Stage4SynsetAmbiguityError as exc:
@@ -533,6 +544,7 @@ def extract_raw_concepts_from_stage3_record(
             noun_chunks=noun_chunks,
             token_by_i=token_by_i,
             object_lookup=object_lookup,
+            attribute_mwe_lookup=attribute_mwe_lookup,
             children_by_head=children_by_head,
         )
     except Stage4SynsetAmbiguityError as exc:
@@ -590,6 +602,7 @@ def extract_raw_concepts_from_doc(
     doc: Doc,
     *,
     object_lookup: Any | None = None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None = None,
     action_lookup: Any | None = None,
     preposition_mwe_lookup: _PrepositionMweIndex | Sequence[_PrepositionMweEntry] | None = None,
 ) -> RawExtractionResult:
@@ -617,6 +630,7 @@ def extract_raw_concepts_from_doc(
             builder,
             doc=doc,
             object_lookup=object_lookup,
+            attribute_mwe_lookup=attribute_mwe_lookup,
             children_by_head=children_by_head,
         )
     except Stage4SynsetAmbiguityError as exc:
@@ -667,6 +681,7 @@ def run_stage4_extract_raw(
     summary_path: str | Path | None = None,
     limit: int | None = None,
     object_lookup: Any | None = None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None = None,
     action_lookup: Any | None = None,
     preposition_mwe_lookup: _PrepositionMweIndex | Sequence[_PrepositionMweEntry] | None = None,
     max_rss_gib: float | None = None,
@@ -728,6 +743,7 @@ def run_stage4_extract_raw(
             result = extract_raw_concepts_from_stage3_record(
                 record,
                 object_lookup=object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
                 action_lookup=action_lookup,
                 preposition_mwe_lookup=preposition_mwe_lookup,
             )
@@ -832,6 +848,7 @@ def _extract_tag_list_objects_and_modifiers(
     *,
     stage3_record: Mapping[str, Any],
     object_lookup: Any | None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
     children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
 ) -> None:
     for segment in _require_list(stage3_record, "tag_segments"):
@@ -847,6 +864,7 @@ def _extract_tag_list_objects_and_modifiers(
             noun_chunks=segment_chunks,
             token_by_i=token_by_i,
             object_lookup=object_lookup,
+            attribute_mwe_lookup=attribute_mwe_lookup,
             children_by_head=children_by_head,
         )
         _mark_tag_list_outputs(
@@ -866,6 +884,7 @@ def _extract_tag_list_objects_and_modifiers(
                 segment_tokens=segment_tokens,
                 segment_id=segment_id,
                 segment_text=segment_text,
+                attribute_mwe_lookup=attribute_mwe_lookup,
             )
 
 
@@ -894,12 +913,35 @@ def _extract_tag_list_floating_attribute(
     segment_tokens: Sequence[Mapping[str, Any]],
     segment_id: str,
     segment_text: str,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
 ) -> None:
     content_tokens = [
         token
         for token in segment_tokens
         if _optional_text(token, "pos") not in {"PUNCT", "SPACE"}
     ]
+    if len(content_tokens) >= 2 and attribute_mwe_lookup is not None:
+        token_views = _record_attribute_token_views(content_tokens)
+        candidate = AttributeMweCandidate(
+            tokens=token_views,
+            anchor=AttributeAnchor(token_i=token_views[-1].i),
+            surface=" ".join(token.text for token in token_views),
+        )
+        inventory_row = attribute_mwe_lookup(candidate)
+        if inventory_row is not None:
+            _add_unattached_record_attribute_mwe(
+                builder,
+                candidate=candidate,
+                inventory_row=inventory_row,
+                source_text=segment_text,
+                source_detail={
+                    "caption_shape": "tag_list",
+                    "tag_segment_id": segment_id,
+                    "tag_segment_text": segment_text,
+                    "modifier_source": "tag_list_unattached_attribute_mwe",
+                },
+            )
+            return
     if len(content_tokens) != 1:
         return
     token = content_tokens[0]
@@ -938,6 +980,7 @@ def _extract_doc_objects_and_chunk_modifiers(
     *,
     doc: Doc,
     object_lookup: Any | None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
     children_by_head: Mapping[int, Sequence[Token]],
 ) -> None:
     for chunk in doc.noun_chunks:
@@ -966,10 +1009,27 @@ def _extract_doc_objects_and_chunk_modifiers(
 
         chunk_token_indices = {token.i for token in chunk}
         excluded_modifier_tokens = set(selection.token_indices) | builder.relation_mwe_consumed_tokens
+        selected_attribute_mwes = _select_doc_attribute_mwes(
+            chunk,
+            children_by_head=children_by_head,
+            excluded_token_indices=excluded_modifier_tokens,
+            attribute_mwe_lookup=attribute_mwe_lookup,
+        )
+        attribute_mwe_by_start = {
+            selected.candidate.token_start: selected
+            for selected in selected_attribute_mwes
+        }
+        attribute_mwe_consumed_tokens = {
+            token_i
+            for selected in selected_attribute_mwes
+            for token_i in selected.candidate.token_indices
+        }
         emitted_attribute_tokens: set[int] = set()
 
         def add_attribute_modifier(token: Token, *, conj_head: Token | None = None) -> None:
             token_i = token.i
+            if token_i in attribute_mwe_consumed_tokens:
+                return
             if token_i in emitted_attribute_tokens:
                 return
             emitted_attribute_tokens.add(token_i)
@@ -1011,11 +1071,47 @@ def _extract_doc_objects_and_chunk_modifiers(
                 source_detail=edge_detail,
             )
 
+        def add_attribute_mwe(selected: Any) -> None:
+            candidate = selected.candidate
+            inventory_row = selected.lookup
+            attribute_id = builder.add_mention(
+                mention_type="attribute",
+                text=_doc_attribute_mwe_text(doc, candidate),
+                lemma=" ".join(token.lemma for token in candidate.tokens),
+                rule_id=ATTRIBUTE_RULE_ID,
+                char_start=candidate.tokens[0].char_start,
+                char_end=candidate.tokens[-1].char_end,
+                token_start=candidate.token_start,
+                token_end=candidate.token_end,
+                source_text=chunk.text,
+                source_detail=_attribute_mwe_detail(candidate, inventory_row, chunk.root.i),
+            )
+            builder.add_edge(
+                edge_type="has_attribute",
+                source_mention_id=object_id,
+                target_mention_id=attribute_id,
+                label="has_attribute",
+                rule_id=ATTRIBUTE_RULE_ID,
+                evidence_text=chunk.text,
+                source_detail={
+                    "root_i": chunk.root.i,
+                    "modifier_i": candidate.anchor.token_i,
+                    "modifier_source": "attribute_mwe",
+                    "selected_token_indices": list(candidate.token_indices),
+                },
+            )
+
         for token in chunk:
             token_i = token.i
             if token_i in selection.token_indices:
                 continue
             if token_i in builder.relation_mwe_consumed_tokens:
+                continue
+            selected_mwe = attribute_mwe_by_start.get(token_i)
+            if selected_mwe is not None:
+                add_attribute_mwe(selected_mwe)
+                continue
+            if token_i in attribute_mwe_consumed_tokens:
                 continue
             if _is_doc_quantity_modifier(token):
                 quantity_id = builder.add_mention(
@@ -1283,6 +1379,7 @@ def _extract_objects_and_chunk_modifiers(
     noun_chunks: Sequence[Mapping[str, Any]],
     token_by_i: Mapping[int, Mapping[str, Any]],
     object_lookup: Any | None,
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
     children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
 ) -> None:
     for chunk in noun_chunks:
@@ -1316,6 +1413,21 @@ def _extract_objects_and_chunk_modifiers(
         chunk_tokens = list(_chunk_tokens(chunk, token_by_i))
         chunk_token_indices = {_require_int(token, "i") for token in chunk_tokens}
         excluded_modifier_tokens = set(selection.token_indices) | builder.relation_mwe_consumed_tokens
+        selected_attribute_mwes = _select_record_attribute_mwes(
+            chunk_tokens,
+            children_by_head=children_by_head,
+            excluded_token_indices=excluded_modifier_tokens,
+            attribute_mwe_lookup=attribute_mwe_lookup,
+        )
+        attribute_mwe_by_start = {
+            selected.candidate.token_start: selected
+            for selected in selected_attribute_mwes
+        }
+        attribute_mwe_consumed_tokens = {
+            token_i
+            for selected in selected_attribute_mwes
+            for token_i in selected.candidate.token_indices
+        }
         emitted_attribute_tokens: set[int] = set()
         root_i = _require_int(chunk, "root_i")
         chunk_text = _optional_text(chunk, "text")
@@ -1326,6 +1438,8 @@ def _extract_objects_and_chunk_modifiers(
             conj_head: Mapping[str, Any] | None = None,
         ) -> None:
             token_i = _require_int(token, "i")
+            if token_i in attribute_mwe_consumed_tokens:
+                return
             if token_i in emitted_attribute_tokens:
                 return
             emitted_attribute_tokens.add(token_i)
@@ -1367,11 +1481,47 @@ def _extract_objects_and_chunk_modifiers(
                 source_detail=edge_detail,
             )
 
+        def add_attribute_mwe(selected: Any) -> None:
+            candidate = selected.candidate
+            inventory_row = selected.lookup
+            attribute_id = builder.add_mention(
+                mention_type="attribute",
+                text=candidate.surface,
+                lemma=" ".join(token.lemma for token in candidate.tokens),
+                rule_id=ATTRIBUTE_RULE_ID,
+                char_start=candidate.tokens[0].char_start,
+                char_end=candidate.tokens[-1].char_end,
+                token_start=candidate.token_start,
+                token_end=candidate.token_end,
+                source_text=chunk_text,
+                source_detail=_attribute_mwe_detail(candidate, inventory_row, root_i),
+            )
+            builder.add_edge(
+                edge_type="has_attribute",
+                source_mention_id=object_id,
+                target_mention_id=attribute_id,
+                label="has_attribute",
+                rule_id=ATTRIBUTE_RULE_ID,
+                evidence_text=chunk_text,
+                source_detail={
+                    "root_i": root_i,
+                    "modifier_i": candidate.anchor.token_i,
+                    "modifier_source": "attribute_mwe",
+                    "selected_token_indices": list(candidate.token_indices),
+                },
+            )
+
         for token in chunk_tokens:
             token_i = _require_int(token, "i")
             if token_i in selection.token_indices:
                 continue
             if token_i in builder.relation_mwe_consumed_tokens:
+                continue
+            selected_mwe = attribute_mwe_by_start.get(token_i)
+            if selected_mwe is not None:
+                add_attribute_mwe(selected_mwe)
+                continue
+            if token_i in attribute_mwe_consumed_tokens:
                 continue
             if _is_quantity_modifier(token):
                 quantity_id = builder.add_mention(
@@ -3192,6 +3342,10 @@ def load_gpic_action_inventory(path: str | Path) -> GpicActionInventoryLookup:
     return GpicActionInventoryLookup.from_tsv(path)
 
 
+def load_gpic_attribute_mwe_inventory(path: str | Path) -> ResolvedAttributeMweIndex:
+    return ResolvedAttributeMweIndex.from_tsv(path)
+
+
 def load_preposition_mwe_lexicon(path: str | Path) -> tuple[_PrepositionMweEntry, ...]:
     entries: list[_PrepositionMweEntry] = []
     with Path(path).open(encoding="utf-8", newline="") as handle:
@@ -3932,6 +4086,156 @@ def _append_unique(values: list[str], value: str) -> None:
     normalized = _normalize_display_surface(value)
     if normalized and normalized not in values:
         values.append(normalized)
+
+
+def _record_attribute_token_views(
+    tokens: Sequence[Mapping[str, Any]],
+) -> tuple[AttributeTokenView, ...]:
+    return tuple(
+        AttributeTokenView(
+            i=_require_int(token, "i"),
+            text=_token_text(token),
+            lemma=_token_lemma(token),
+            dep=_optional_text(token, "dep"),
+            pos=_optional_text(token, "pos"),
+            tag=_optional_text(token, "tag"),
+            char_start=_optional_int(token, "char_start"),
+            char_end=_optional_int(token, "char_end"),
+            is_quantity=_is_quantity_modifier(token),
+        )
+        for token in tokens
+    )
+
+
+def _doc_attribute_token_views(tokens: Sequence[Token]) -> tuple[AttributeTokenView, ...]:
+    return tuple(
+        AttributeTokenView(
+            i=token.i,
+            text=token.text,
+            lemma=_doc_token_lemma(token),
+            dep=token.dep_,
+            pos=token.pos_,
+            tag=token.tag_,
+            char_start=token.idx,
+            char_end=token.idx + len(token.text),
+            is_quantity=_is_doc_quantity_modifier(token),
+        )
+        for token in tokens
+    )
+
+
+def _record_attribute_children_views(
+    children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> dict[int, tuple[AttributeTokenView, ...]]:
+    return {
+        head_i: _record_attribute_token_views(children)
+        for head_i, children in children_by_head.items()
+    }
+
+
+def _doc_attribute_children_views(
+    children_by_head: Mapping[int, Sequence[Token]],
+) -> dict[int, tuple[AttributeTokenView, ...]]:
+    return {
+        head_i: _doc_attribute_token_views(children)
+        for head_i, children in children_by_head.items()
+    }
+
+
+def _select_record_attribute_mwes(
+    chunk_tokens: Sequence[Mapping[str, Any]],
+    *,
+    children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
+    excluded_token_indices: set[int],
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
+) -> tuple[Any, ...]:
+    if attribute_mwe_lookup is None:
+        return ()
+    token_views = _record_attribute_token_views(chunk_tokens)
+    anchors = collect_attribute_anchors(
+        token_views,
+        children_by_head=_record_attribute_children_views(children_by_head),
+        excluded_token_indices=excluded_token_indices,
+    )
+    return select_attribute_mwes(
+        token_views,
+        anchors=anchors,
+        excluded_token_indices=excluded_token_indices,
+        lookup=attribute_mwe_lookup,
+    )
+
+
+def _select_doc_attribute_mwes(
+    chunk: Any,
+    *,
+    children_by_head: Mapping[int, Sequence[Token]],
+    excluded_token_indices: set[int],
+    attribute_mwe_lookup: ResolvedAttributeMweIndex | None,
+) -> tuple[Any, ...]:
+    if attribute_mwe_lookup is None:
+        return ()
+    token_views = _doc_attribute_token_views(tuple(chunk))
+    anchors = collect_attribute_anchors(
+        token_views,
+        children_by_head=_doc_attribute_children_views(children_by_head),
+        excluded_token_indices=excluded_token_indices,
+    )
+    return select_attribute_mwes(
+        token_views,
+        anchors=anchors,
+        excluded_token_indices=excluded_token_indices,
+        lookup=attribute_mwe_lookup,
+    )
+
+
+def _attribute_mwe_detail(
+    candidate: AttributeMweCandidate,
+    inventory_row: Mapping[str, str],
+    root_i: int | None,
+) -> JsonObject:
+    detail: JsonObject = {
+        "root_i": root_i,
+        "modifier_i": candidate.anchor.token_i,
+        "modifier_source": "attribute_mwe",
+        "attribute_unit_type": ATTRIBUTE_UNIT_MWE,
+        "span_token_count": len(candidate.tokens),
+        "anchor_token_offset": candidate.anchor_token_offset,
+        "selected_token_indices": list(candidate.token_indices),
+        "inventory_span_key": inventory_row.get("span_key", ""),
+        "inventory_rule_version": inventory_row.get("attribute_mwe_rule_version", ""),
+    }
+    if candidate.anchor.conj_head_i is not None:
+        detail["conj_head_i"] = candidate.anchor.conj_head_i
+    return detail
+
+
+def _doc_attribute_mwe_text(doc: Doc, candidate: AttributeMweCandidate) -> str:
+    del doc
+    return candidate.surface
+
+
+def _add_unattached_record_attribute_mwe(
+    builder: _RawBuilder,
+    *,
+    candidate: AttributeMweCandidate,
+    inventory_row: Mapping[str, str],
+    source_text: str,
+    source_detail: JsonObject,
+) -> None:
+    detail = _attribute_mwe_detail(candidate, inventory_row, None)
+    detail.update(source_detail)
+    builder.add_mention(
+        mention_type="attribute",
+        text=candidate.surface,
+        lemma=" ".join(token.lemma for token in candidate.tokens),
+        rule_id=ATTRIBUTE_RULE_ID,
+        char_start=candidate.tokens[0].char_start,
+        char_end=candidate.tokens[-1].char_end,
+        token_start=candidate.token_start,
+        token_end=candidate.token_end,
+        source_text=source_text,
+        source_detail=detail,
+    )
 
 
 def _is_attribute_modifier(token: Mapping[str, Any]) -> bool:

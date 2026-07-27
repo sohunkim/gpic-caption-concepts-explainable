@@ -5,8 +5,9 @@ import csv
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 import sys
 from time import perf_counter
@@ -18,24 +19,43 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer
+from gpic_concepts_v1.attribute_units import (
+    ATTRIBUTE_MWE_RULE_VERSION,
+    ATTRIBUTE_UNIT_MWE,
+    ATTRIBUTE_UNIT_SINGLE_TOKEN,
+    AttributeAnchor,
+    AttributeMweCandidate,
+    AttributeTokenView,
+    collect_attribute_anchors,
+    inventory_attribute_key,
+    normalize_attribute_surface,
+    select_attribute_mwes,
+    separator_equivalent_key,
+    separator_variants,
+)
 from gpic_concepts_v1.io_jsonl import iter_jsonl
 from gpic_concepts_v1.stage4_extract_raw import (
     ATTRIBUTE_MODIFIER_DEPS,
     NLTK_DATA_DIR,
     OEWN_SPEC,
     WN_DATA_DIR,
+    _build_children_by_head,
     _chunk_tokens,
+    _conjunct_attribute_modifiers,
     _is_allowed_token_record_span_start,
     _is_plural_common_noun_token,
+    _is_quantity_modifier,
     _normalize_query,
     _object_core_token_indices_from_token_records,
     _probe_object_surface,
     _require_int,
     _select_by_wn30_lemma_count,
+    _find_preposition_mwe_matches_in_token_records,
     _token_record_span_lookup_surfaces,
     _token_record_span_text,
     _token_text,
     load_gpic_object_inventory,
+    load_preposition_mwe_lexicon,
     nltk,
     wn,
 )
@@ -100,6 +120,11 @@ HARD_CONFLICT_ATTRIBUTE_LEXFILES = frozenset(("adv.all", "noun.feeling", "noun.m
 
 FIELDNAMES = [
     "span_key",
+    "attribute_unit_type",
+    "span_token_count",
+    "anchor_token_offset",
+    "lookup_forms",
+    "attribute_mwe_rule_version",
     "observed_surface",
     "decision_status",
     "decision_reason",
@@ -146,6 +171,7 @@ class AttributeLookupResult:
     decision_status: str
     decision_reason: str
     source_row: Mapping[str, str] | None = None
+    lookup_forms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +190,10 @@ class _InventorySynset:
 @dataclass(slots=True)
 class AttributeAccumulator:
     span_key: str
+    attribute_unit_type: str = ATTRIBUTE_UNIT_SINGLE_TOKEN
+    span_token_count: int = 1
+    anchor_token_offset: int = 0
+    lookup_forms: tuple[str, ...] = ()
     count: int = 0
     caption_ids: set[str] = field(default_factory=set)
     surfaces: Counter[str] = field(default_factory=Counter)
@@ -175,7 +205,7 @@ class AttributeInventoryCheckpointState:
     caption_total: int
     noun_chunk_total: int
     attribute_candidate_total: int
-    inventory: dict[str, AttributeAccumulator]
+    inventory: dict[tuple[str, str], AttributeAccumulator]
 
 
 @dataclass(slots=True)
@@ -195,7 +225,7 @@ class AttributeInventoryCheckpointWriter:
         caption_total: int,
         noun_chunk_total: int,
         attribute_candidate_total: int,
-        inventory: Mapping[str, AttributeAccumulator],
+        inventory: Mapping[tuple[str, str], AttributeAccumulator],
     ) -> None:
         if caption_total - self._last_caption_total < self.interval_records:
             return
@@ -225,11 +255,11 @@ class AttributeInventoryCheckpointWriter:
         caption_total: int,
         noun_chunk_total: int,
         attribute_candidate_total: int,
-        inventory: Mapping[str, AttributeAccumulator],
+        inventory: Mapping[tuple[str, str], AttributeAccumulator],
         summary: Mapping[str, Any] | None = None,
     ) -> None:
         payload: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "artifact_type": "gpic_observed_attribute_inventory_checkpoint",
             "status": status,
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -247,28 +277,34 @@ class AttributeInventoryCheckpointWriter:
 
 
 class GpicAttributeInventoryLookup:
-    """Lookup prior attribute inventory rows by normalized observed surface."""
+    """Lookup prior attribute rows by unit type and normalized observed surface."""
 
     def __init__(
         self,
-        rows_by_key: Mapping[str, Mapping[str, str]],
+        rows_by_key: Mapping[Any, Mapping[str, str]],
     ) -> None:
-        self._rows_by_key = dict(rows_by_key)
+        normalized_rows: dict[tuple[str, str], Mapping[str, str]] = {}
+        for key, row in rows_by_key.items():
+            composite_key = (
+                key
+                if isinstance(key, tuple) and len(key) == 2
+                else inventory_attribute_key(row)
+            )
+            normalized_rows[(str(composite_key[0]), str(composite_key[1]))] = row
+        self._rows_by_key = normalized_rows
 
     @classmethod
     def from_tsv(cls, path: str | Path) -> "GpicAttributeInventoryLookup":
-        rows_by_key: dict[str, Mapping[str, str]] = {}
+        rows_by_key: dict[tuple[str, str], Mapping[str, str]] = {}
         with Path(path).open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle, delimiter="\t")
             for row in reader:
                 row_dict = dict(row)
                 if _is_automatic_surface_changed_prior_row(row_dict):
                     continue
-                span_key = row.get("span_key", "") or _normalize_query(
-                    row.get("observed_surface", "")
-                )
-                if span_key and span_key not in rows_by_key:
-                    rows_by_key[span_key] = row_dict
+                key = inventory_attribute_key(row_dict)
+                if key[1] and key not in rows_by_key:
+                    rows_by_key[key] = row_dict
         return cls(rows_by_key)
 
     def __call__(
@@ -276,8 +312,11 @@ class GpicAttributeInventoryLookup:
         surface: str,
         *,
         require_surface_query_conflict_check: bool = False,
+        attribute_unit_type: str = ATTRIBUTE_UNIT_SINGLE_TOKEN,
     ) -> AttributeLookupResult | None:
-        row = self._rows_by_key.get(_normalize_query(surface))
+        row = self._rows_by_key.get(
+            (attribute_unit_type, normalize_attribute_surface(surface))
+        )
         if row is None:
             return None
         return _attribute_lookup_result_from_inventory_row(row, surface)
@@ -320,6 +359,7 @@ def _attribute_lookup_result_from_inventory_row(
         decision_status,
         decision_reason,
         dict(row) if preserve_source_row else None,
+        tuple(_split_pipe(row.get("lookup_forms", ""))),
     )
 
 
@@ -329,6 +369,7 @@ class AttributeLookup(Protocol):
         surface: str,
         *,
         require_surface_query_conflict_check: bool = False,
+        attribute_unit_type: str = ATTRIBUTE_UNIT_SINGLE_TOKEN,
     ) -> AttributeLookupResult | None:
         ...
 
@@ -347,8 +388,22 @@ def parse_args() -> argparse.Namespace:
         "--attribute-inventory",
         help="Optional prior attribute inventory TSV. Selected synsets in this file are reused.",
     )
+    parser.add_argument(
+        "--preposition-mwe-lexicon",
+        help="Optional active preposition MWE TSV used as an attribute-span boundary.",
+    )
+    parser.add_argument(
+        "--attribute-unit-mode",
+        choices=("all", "mwe_only", "single_token_only"),
+        default="all",
+        help="Select which attribute units to emit. Default: all.",
+    )
     parser.add_argument("--output", required=True, help="Output observed attribute inventory TSV")
     parser.add_argument("--summary", help="Optional summary JSON path")
+    parser.add_argument(
+        "--needs-manual-output",
+        help="Optional TSV containing only decision_status=needs_manual rows.",
+    )
     parser.add_argument("--limit", type=int, help="Optional maximum Stage 3 records to scan")
     parser.add_argument(
         "--progress-output",
@@ -385,6 +440,11 @@ def main() -> None:
     args = parse_args()
     object_lookup = load_gpic_object_inventory(args.object_inventory)
     attribute_lookup = _build_attribute_lookup(args.attribute_inventory)
+    preposition_mwe_lookup = (
+        load_preposition_mwe_lexicon(Path(args.preposition_mwe_lexicon))
+        if args.preposition_mwe_lexicon
+        else None
+    )
     checkpoint_metadata = _checkpoint_metadata(args)
     checkpoint_state = (
         _load_checkpoint(Path(args.checkpoint_output), checkpoint_metadata)
@@ -411,6 +471,8 @@ def main() -> None:
         records,
         object_lookup=object_lookup,
         attribute_lookup=attribute_lookup,
+        preposition_mwe_lookup=preposition_mwe_lookup,
+        attribute_unit_mode=args.attribute_unit_mode,
         progress_output=Path(args.progress_output) if args.progress_output else None,
         progress_interval_records=args.progress_interval_records,
         checkpoint_writer=checkpoint_writer,
@@ -422,6 +484,11 @@ def main() -> None:
         else 0,
     )
     _write_tsv(Path(args.output), rows)
+    if args.needs_manual_output:
+        _write_tsv(
+            Path(args.needs_manual_output),
+            [row for row in rows if row.get("decision_status") == "needs_manual"],
+        )
     summary.update({"input": args.input, "output": args.output})
     if args.summary:
         with atomic_text_writer(Path(args.summary)) as handle:
@@ -437,17 +504,21 @@ def build_attribute_inventory_rows(
     *,
     object_lookup: Any,
     attribute_lookup: AttributeLookup,
+    preposition_mwe_lookup: Any | None = None,
+    attribute_unit_mode: str = "all",
     progress_output: Path | None = None,
     progress_interval_records: int = 10000,
     checkpoint_writer: AttributeInventoryCheckpointWriter | None = None,
-    initial_inventory: Mapping[str, AttributeAccumulator] | None = None,
+    initial_inventory: Mapping[tuple[str, str], AttributeAccumulator] | None = None,
     initial_caption_total: int = 0,
     initial_noun_chunk_total: int = 0,
     initial_attribute_candidate_total: int = 0,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     if progress_interval_records < 1:
         raise ValueError("progress_interval_records must be greater than zero")
-    inventory: dict[str, AttributeAccumulator] = dict(initial_inventory or {})
+    if attribute_unit_mode not in {"all", "mwe_only", "single_token_only"}:
+        raise ValueError(f"unsupported attribute_unit_mode: {attribute_unit_mode}")
+    inventory: dict[tuple[str, str], AttributeAccumulator] = dict(initial_inventory or {})
     caption_total = initial_caption_total
     noun_chunk_total = initial_noun_chunk_total
     attribute_candidate_total = initial_attribute_candidate_total
@@ -466,36 +537,128 @@ def build_attribute_inventory_rows(
     for record in records:
         caption_total += 1
         caption_id = str(record.get("caption_id", ""))
-        token_by_i = {_require_int(token, "i"): token for token in record.get("tokens", [])}
+        tokens = list(record.get("tokens", []))
+        token_by_i = {_require_int(token, "i"): token for token in tokens}
+        children_by_head = _build_children_by_head(tokens)
+        relation_mwe_consumed_tokens: set[int] = set()
+        selected_object_segment_ids: set[str] = set()
+        if preposition_mwe_lookup is not None:
+            relation_mwe_consumed_tokens.update(
+                token_i
+                for match in _find_preposition_mwe_matches_in_token_records(
+                    tokens,
+                    preposition_mwe_lookup,
+                )
+                for token_i in match.token_indices
+            )
         for chunk in record.get("noun_chunks", []):
             noun_chunk_total += 1
             consumed = _selected_object_token_indices(chunk, token_by_i, object_lookup)
             if not consumed:
                 continue
-            for token in _chunk_tokens(chunk, token_by_i):
-                token_i = _require_int(token, "i")
-                if token_i in consumed:
+            segment_id = str(chunk.get("segment_id", "")).strip()
+            if segment_id:
+                selected_object_segment_ids.add(segment_id)
+            chunk_tokens = _chunk_tokens(chunk, token_by_i)
+            excluded = set(consumed) | relation_mwe_consumed_tokens
+            token_views = _attribute_token_views(chunk_tokens)
+            children_views = _attribute_children_views(children_by_head)
+            anchors = collect_attribute_anchors(
+                token_views,
+                children_by_head=children_views,
+                excluded_token_indices=excluded,
+            )
+            selected_mwes = ()
+            if attribute_unit_mode != "single_token_only":
+                excluded_mwe_candidates: dict[
+                    tuple[int, ...],
+                    tuple[AttributeMweCandidate, AttributeLookupResult],
+                ] = {}
+
+                def lookup_mwe_for_selection(
+                    candidate: AttributeMweCandidate,
+                ) -> AttributeLookupResult | None:
+                    result = _lookup_attribute_mwe_candidate(
+                        candidate,
+                        attribute_lookup=attribute_lookup,
+                    )
+                    if result is not None and result.decision_status == "excluded":
+                        excluded_mwe_candidates.setdefault(
+                            candidate.token_indices,
+                            (candidate, result),
+                        )
+                        return None
+                    return result
+
+                selected_mwes = select_attribute_mwes(
+                    token_views,
+                    anchors=anchors,
+                    excluded_token_indices=excluded,
+                    lookup=lookup_mwe_for_selection,
+                )
+                for candidate, lookup in excluded_mwe_candidates.values():
+                    attribute_candidate_total += 1
+                    _accumulate_attribute_unit(
+                        inventory,
+                        caption_id=caption_id,
+                        surface=candidate.surface,
+                        attribute_unit_type=ATTRIBUTE_UNIT_MWE,
+                        span_token_count=len(candidate.tokens),
+                        anchor_token_offset=candidate.anchor_token_offset,
+                        lookup=lookup,
+                    )
+                for selected in selected_mwes:
+                    attribute_candidate_total += 1
+                    _accumulate_attribute_unit(
+                        inventory,
+                        caption_id=caption_id,
+                        surface=selected.candidate.surface,
+                        attribute_unit_type=ATTRIBUTE_UNIT_MWE,
+                        span_token_count=len(selected.candidate.tokens),
+                        anchor_token_offset=selected.candidate.anchor_token_offset,
+                        lookup=selected.lookup,
+                    )
+
+            if attribute_unit_mode == "mwe_only":
+                continue
+            mwe_consumed_tokens = {
+                token_i
+                for selected in selected_mwes
+                for token_i in selected.candidate.token_indices
+            }
+            token_by_view_i = {token.i: token for token in token_views}
+            for anchor in anchors:
+                if anchor.token_i in mwe_consumed_tokens:
                     continue
-                if token.get("dep") not in ATTRIBUTE_MODIFIER_DEPS:
-                    continue
-                surface = _token_text(token)
-                span_key = _normalize_query(surface)
-                if not span_key:
-                    continue
-                attribute_candidate_total += 1
-                acc = inventory.setdefault(span_key, AttributeAccumulator(span_key=span_key))
-                acc.count += 1
-                if caption_id:
-                    acc.caption_ids.add(caption_id)
-                acc.surfaces[surface] += 1
-                lookup = attribute_lookup(
+                token = token_by_view_i[anchor.token_i]
+                surface = token.text
+                lookup = _call_attribute_lookup(
+                    attribute_lookup,
                     surface,
                     require_surface_query_conflict_check=_is_plural_common_noun_token(
-                        token
+                        token_by_i[token.i]
                     ),
+                    attribute_unit_type=ATTRIBUTE_UNIT_SINGLE_TOKEN,
                 )
-                if acc.lookup is None or _lookup_rank(lookup) > _lookup_rank(acc.lookup):
-                    acc.lookup = lookup
+                attribute_candidate_total += 1
+                _accumulate_attribute_unit(
+                    inventory,
+                    caption_id=caption_id,
+                    surface=surface,
+                    attribute_unit_type=ATTRIBUTE_UNIT_SINGLE_TOKEN,
+                    span_token_count=1,
+                    anchor_token_offset=0,
+                    lookup=lookup,
+                )
+        if attribute_unit_mode != "single_token_only":
+            attribute_candidate_total += _accumulate_objectless_tag_list_mwes(
+                inventory,
+                record=record,
+                caption_id=caption_id,
+                selected_object_segment_ids=selected_object_segment_ids,
+                relation_mwe_consumed_tokens=relation_mwe_consumed_tokens,
+                attribute_lookup=attribute_lookup,
+            )
         if caption_total == 1 or caption_total % progress_interval_records == 0:
             _write_progress(
                 progress_output,
@@ -522,6 +685,10 @@ def build_attribute_inventory_rows(
         "noun_chunk_total": noun_chunk_total,
         "attribute_candidate_total": attribute_candidate_total,
         "inventory_rows": len(rows),
+        "attribute_unit_mode": attribute_unit_mode,
+        "attribute_unit_type_counts": dict(
+            Counter(row["attribute_unit_type"] for row in rows)
+        ),
         "decision_status_counts": dict(Counter(row["decision_status"] for row in rows)),
         "decision_reason_counts": dict(Counter(row["decision_reason"] for row in rows)),
         "attribute_gate_counts": dict(Counter(row["attribute_gate"] for row in rows)),
@@ -561,13 +728,77 @@ def build_attribute_inventory_rows(
     return rows, summary
 
 
+def _accumulate_objectless_tag_list_mwes(
+    inventory: dict[tuple[str, str], AttributeAccumulator],
+    *,
+    record: Mapping[str, Any],
+    caption_id: str,
+    selected_object_segment_ids: set[str],
+    relation_mwe_consumed_tokens: set[int],
+    attribute_lookup: AttributeLookup,
+) -> int:
+    meta = record.get("meta")
+    caption_shape = (
+        str(meta.get("caption_shape", "")).strip()
+        if isinstance(meta, Mapping)
+        else str(record.get("caption_shape", "")).strip()
+    )
+    tag_segments = list(record.get("tag_segments", []))
+    if caption_shape != "tag_list" and not tag_segments:
+        return 0
+
+    added = 0
+    for segment in tag_segments:
+        segment_id = str(segment.get("segment_id", "")).strip()
+        if segment_id and segment_id in selected_object_segment_ids:
+            continue
+        content_tokens = [
+            token
+            for token in segment.get("tokens", [])
+            if str(token.get("pos", "")).strip() not in {"PUNCT", "SPACE"}
+        ]
+        if len(content_tokens) < 2:
+            continue
+        token_views = _attribute_token_views(content_tokens)
+        if any(
+            token.i in relation_mwe_consumed_tokens or token.is_quantity
+            for token in token_views
+        ):
+            continue
+        candidate = AttributeMweCandidate(
+            tokens=token_views,
+            anchor=AttributeAnchor(token_i=token_views[-1].i),
+            surface=" ".join(token.text for token in token_views),
+        )
+        lookup = _lookup_attribute_mwe_candidate(
+            candidate,
+            attribute_lookup=attribute_lookup,
+        )
+        if lookup is None:
+            continue
+        _accumulate_attribute_unit(
+            inventory,
+            caption_id=caption_id,
+            surface=candidate.surface,
+            attribute_unit_type=ATTRIBUTE_UNIT_MWE,
+            span_token_count=len(candidate.tokens),
+            anchor_token_offset=candidate.anchor_token_offset,
+            lookup=lookup,
+        )
+        added += 1
+    return added
+
+
 def _checkpoint_metadata(args: argparse.Namespace) -> dict[str, str]:
     return {
+        "attribute_candidate_rule_version": ATTRIBUTE_MWE_RULE_VERSION,
         "input": str(Path(args.input)),
         "output": str(Path(args.output)),
         "limit": "" if args.limit is None else str(args.limit),
         "object_inventory": str(Path(args.object_inventory)),
         "attribute_inventory": args.attribute_inventory or "",
+        "preposition_mwe_lexicon": args.preposition_mwe_lexicon or "",
+        "attribute_unit_mode": args.attribute_unit_mode,
     }
 
 
@@ -580,6 +811,11 @@ def _load_checkpoint(
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("artifact_type") != "gpic_observed_attribute_inventory_checkpoint":
         raise SystemExit(f"invalid attribute inventory checkpoint: {path}")
+    if int(payload.get("schema_version") or 0) != 2:
+        raise SystemExit(
+            "attribute inventory checkpoint schema mismatch; remove the stale "
+            f"single-token checkpoint: {path}"
+        )
     metadata = payload.get("metadata") or {}
     if dict(metadata) != dict(expected_metadata):
         raise SystemExit(
@@ -593,7 +829,7 @@ def _load_checkpoint(
         noun_chunk_total=int(payload.get("noun_chunk_total") or 0),
         attribute_candidate_total=int(payload.get("attribute_candidate_total") or 0),
         inventory={
-            acc.span_key: acc
+            (acc.attribute_unit_type, acc.span_key): acc
             for acc in (
                 _accumulator_from_checkpoint_row(row)
                 for row in payload.get("inventory", [])
@@ -605,6 +841,10 @@ def _load_checkpoint(
 def _accumulator_checkpoint_row(acc: AttributeAccumulator) -> dict[str, Any]:
     return {
         "span_key": acc.span_key,
+        "attribute_unit_type": acc.attribute_unit_type,
+        "span_token_count": acc.span_token_count,
+        "anchor_token_offset": acc.anchor_token_offset,
+        "lookup_forms": list(acc.lookup_forms),
         "count": acc.count,
         "caption_ids": sorted(acc.caption_ids),
         "surfaces": dict(acc.surfaces),
@@ -625,6 +865,12 @@ def _accumulator_from_checkpoint_row(row: Mapping[str, Any]) -> AttributeAccumul
     )
     return AttributeAccumulator(
         span_key=str(row.get("span_key", "")),
+        attribute_unit_type=str(
+            row.get("attribute_unit_type", ATTRIBUTE_UNIT_SINGLE_TOKEN)
+        ),
+        span_token_count=int(row.get("span_token_count") or 1),
+        anchor_token_offset=int(row.get("anchor_token_offset") or 0),
+        lookup_forms=tuple(str(item) for item in row.get("lookup_forms", [])),
         count=int(row.get("count") or 0),
         caption_ids=set(str(item) for item in row.get("caption_ids", [])),
         surfaces=Counter({str(key): int(value) for key, value in row.get("surfaces", {}).items()}),
@@ -679,6 +925,155 @@ def _selected_object_token_indices(
     return set()
 
 
+def _attribute_candidate_tokens(
+    chunk_tokens: Sequence[Mapping[str, Any]],
+    *,
+    consumed_token_indices: set[int],
+    children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> list[Mapping[str, Any]]:
+    chunk_token_indices = {_require_int(token, "i") for token in chunk_tokens}
+    candidates: list[Mapping[str, Any]] = []
+    emitted_token_indices: set[int] = set()
+
+    def append_candidate(token: Mapping[str, Any]) -> None:
+        token_i = _require_int(token, "i")
+        if token_i in emitted_token_indices:
+            return
+        emitted_token_indices.add(token_i)
+        candidates.append(token)
+
+    for token in chunk_tokens:
+        token_i = _require_int(token, "i")
+        if token_i in consumed_token_indices:
+            continue
+        if _is_quantity_modifier(token):
+            continue
+        if token.get("dep") not in ATTRIBUTE_MODIFIER_DEPS:
+            continue
+        append_candidate(token)
+        for conj_token, _ in _conjunct_attribute_modifiers(
+            token,
+            children_by_head=children_by_head,
+            chunk_token_indices=chunk_token_indices,
+            excluded_token_indices=consumed_token_indices,
+        ):
+            append_candidate(conj_token)
+    return candidates
+
+
+def _attribute_token_views(
+    tokens: Sequence[Mapping[str, Any]],
+) -> tuple[AttributeTokenView, ...]:
+    return tuple(
+        AttributeTokenView(
+            i=_require_int(token, "i"),
+            text=_token_text(token),
+            lemma=str(token.get("lemma", "")),
+            dep=str(token.get("dep", "")),
+            pos=str(token.get("pos", "")),
+            tag=str(token.get("tag", "")),
+            char_start=int(token["char_start"]) if token.get("char_start") is not None else None,
+            char_end=int(token["char_end"]) if token.get("char_end") is not None else None,
+            is_quantity=_is_quantity_modifier(token),
+        )
+        for token in tokens
+    )
+
+
+def _attribute_children_views(
+    children_by_head: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> dict[int, tuple[AttributeTokenView, ...]]:
+    return {
+        head_i: _attribute_token_views(children)
+        for head_i, children in children_by_head.items()
+    }
+
+
+def _lookup_attribute_mwe_candidate(
+    candidate: AttributeMweCandidate,
+    *,
+    attribute_lookup: AttributeLookup,
+) -> AttributeLookupResult | None:
+    lookup = _call_attribute_lookup(
+        attribute_lookup,
+        candidate.surface,
+        attribute_unit_type=ATTRIBUTE_UNIT_MWE,
+    )
+    if lookup is None or not lookup.synsets:
+        return None
+    return lookup
+
+
+def _call_attribute_lookup(
+    attribute_lookup: AttributeLookup,
+    surface: str,
+    *,
+    require_surface_query_conflict_check: bool = False,
+    attribute_unit_type: str,
+) -> AttributeLookupResult | None:
+    try:
+        parameters = inspect.signature(attribute_lookup).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_unit_type = any(
+        parameter.name == "attribute_unit_type"
+        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    if not accepts_unit_type:
+        if attribute_unit_type == ATTRIBUTE_UNIT_MWE:
+            return None
+        return attribute_lookup(
+            surface,
+            require_surface_query_conflict_check=require_surface_query_conflict_check,
+        )
+    return attribute_lookup(
+        surface,
+        require_surface_query_conflict_check=require_surface_query_conflict_check,
+        attribute_unit_type=attribute_unit_type,
+    )
+
+
+def _accumulate_attribute_unit(
+    inventory: dict[tuple[str, str], AttributeAccumulator],
+    *,
+    caption_id: str,
+    surface: str,
+    attribute_unit_type: str,
+    span_token_count: int,
+    anchor_token_offset: int,
+    lookup: AttributeLookupResult | None,
+) -> None:
+    span_key = normalize_attribute_surface(surface)
+    if not span_key:
+        return
+    key = (attribute_unit_type, span_key)
+    lookup_forms = lookup.lookup_forms if lookup is not None else ()
+    acc = inventory.setdefault(
+        key,
+        AttributeAccumulator(
+            span_key=span_key,
+            attribute_unit_type=attribute_unit_type,
+            span_token_count=span_token_count,
+            anchor_token_offset=anchor_token_offset,
+            lookup_forms=lookup_forms,
+        ),
+    )
+    if (
+        acc.span_token_count != span_token_count
+        or acc.anchor_token_offset != anchor_token_offset
+    ):
+        raise ValueError(f"inconsistent attribute unit structure for {key}")
+    acc.count += 1
+    if caption_id:
+        acc.caption_ids.add(caption_id)
+    acc.surfaces[surface] += 1
+    if lookup_forms and not acc.lookup_forms:
+        acc.lookup_forms = lookup_forms
+    if acc.lookup is None or _lookup_rank(lookup) > _lookup_rank(acc.lookup):
+        acc.lookup = lookup
+
+
 def _build_attribute_lookup(attribute_inventory_path: str | None) -> AttributeLookup:
     existing_lookup = (
         GpicAttributeInventoryLookup.from_tsv(attribute_inventory_path)
@@ -691,13 +1086,19 @@ def _build_attribute_lookup(attribute_inventory_path: str | None) -> AttributeLo
         surface: str,
         *,
         require_surface_query_conflict_check: bool = False,
+        attribute_unit_type: str = ATTRIBUTE_UNIT_SINGLE_TOKEN,
     ) -> AttributeLookupResult | None:
-        existing = existing_lookup(surface) if existing_lookup is not None else None
+        existing = (
+            existing_lookup(surface, attribute_unit_type=attribute_unit_type)
+            if existing_lookup is not None
+            else None
+        )
         if existing is not None and existing.decision_status in {"chosen", "excluded"}:
             return existing
         runtime = runtime_lookup(
             surface,
             require_surface_query_conflict_check=require_surface_query_conflict_check,
+            attribute_unit_type=attribute_unit_type,
         )
         return runtime
 
@@ -717,7 +1118,14 @@ def _load_attribute_lookup_runtime() -> AttributeLookup:
         surface: str,
         *,
         require_surface_query_conflict_check: bool = False,
+        attribute_unit_type: str = ATTRIBUTE_UNIT_SINGLE_TOKEN,
     ) -> AttributeLookupResult | None:
+        if attribute_unit_type == ATTRIBUTE_UNIT_MWE:
+            return _lookup_attribute_mwe_surface(
+                surface,
+                oewn=oewn,
+                morphy=morphy,
+            )
         return _lookup_attribute_surface(
             surface,
             oewn=oewn,
@@ -766,6 +1174,89 @@ def _lookup_attribute_surface(
         "chosen",
         "no_oewn_attribute_synset",
     )
+
+
+def _lookup_attribute_mwe_surface(
+    surface: str,
+    *,
+    oewn: Any,
+    morphy: Any,
+) -> AttributeLookupResult:
+    words = normalize_attribute_surface(surface).split()
+    if len(words) < 2:
+        return AttributeLookupResult(
+            "unresolved",
+            normalize_attribute_surface(surface),
+            (),
+            None,
+            "unresolved_not_multi_token_attribute",
+            "",
+            "",
+            "chosen",
+            "no_oewn_attribute_synset",
+        )
+
+    attempted: list[str] = []
+    for index, query in enumerate(separator_variants(words)):
+        attempted.append(query)
+        synsets = _matching_attribute_mwe_synsets(oewn, query)
+        if synsets:
+            case = ("mwe_exact", "mwe_hyphen_variant", "mwe_underscore_variant")[index]
+            return replace(
+                _with_selected_attribute_synset(case, query, synsets),
+                lookup_forms=tuple(attempted),
+            )
+
+    anchor_lemmas: list[str] = []
+    seen_anchor_lemmas: set[str] = set()
+    for pos in ATTRIBUTE_MORPHY_POS:
+        result = morphy(words[-1], pos)
+        lemmas = result.get(pos, set()) if result else set()
+        for lemma in sorted(lemmas):
+            normalized = normalize_attribute_surface(str(lemma))
+            if normalized and normalized != words[-1] and normalized not in seen_anchor_lemmas:
+                seen_anchor_lemmas.add(normalized)
+                anchor_lemmas.append(normalized)
+    for anchor_lemma in anchor_lemmas:
+        for index, query in enumerate(separator_variants([*words[:-1], anchor_lemma])):
+            attempted.append(query)
+            synsets = _matching_attribute_mwe_synsets(oewn, query)
+            if synsets:
+                suffix = ("space", "hyphen", "underscore")[index]
+                return replace(
+                    _with_selected_attribute_synset(
+                        f"mwe_anchor_morphy_{suffix}",
+                        query,
+                        synsets,
+                    ),
+                    lookup_forms=tuple(_unique_nonempty(attempted)),
+                )
+
+    return AttributeLookupResult(
+        "unresolved",
+        normalize_attribute_surface(surface),
+        (),
+        None,
+        "unresolved_no_oewn_attribute_mwe_synset",
+        "",
+        "",
+        "chosen",
+        "no_oewn_attribute_synset",
+        lookup_forms=tuple(_unique_nonempty(attempted)),
+    )
+
+
+def _matching_attribute_mwe_synsets(oewn: Any, query: str) -> tuple[Any, ...]:
+    query_key = separator_equivalent_key(query)
+    return tuple(
+        synset
+        for synset in oewn.synsets(query)
+        if any(
+            separator_equivalent_key(str(lemma)) == query_key
+            for lemma in synset.lemmas()
+        )
+    )
+
 
 def _attribute_surface_query_conflict_result(
     exact_result: AttributeLookupResult,
@@ -961,6 +1452,11 @@ def _inventory_row(acc: AttributeAccumulator) -> dict[str, str]:
     selected = lookup.selected_synset if lookup is not None else None
     return {
         "span_key": acc.span_key,
+        "attribute_unit_type": acc.attribute_unit_type,
+        "span_token_count": str(acc.span_token_count),
+        "anchor_token_offset": str(acc.anchor_token_offset),
+        "lookup_forms": "|".join(acc.lookup_forms),
+        "attribute_mwe_rule_version": ATTRIBUTE_MWE_RULE_VERSION,
         "observed_surface": acc.surfaces.most_common(1)[0][0] if acc.surfaces else acc.span_key,
         "decision_status": lookup.decision_status if lookup is not None else "chosen",
         "decision_reason": lookup.decision_reason if lookup is not None else "no_oewn_attribute_synset",

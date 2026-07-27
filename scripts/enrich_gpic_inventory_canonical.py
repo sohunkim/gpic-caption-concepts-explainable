@@ -154,10 +154,16 @@ def _decide_canonical(
     morphy: Morphy,
     ngram_evidence: dict[tuple[str, str], float],
     morphy_pos: tuple[str, ...] = ("n",),
+    attribute_mwe_mode: bool = False,
 ) -> dict[str, str]:
     synset_id = row.get("selected_oewn_synset", "")
     all_lemmas = _ordered_unique(str(lemma) for lemma in synset.lemmas())
-    support_keys = _observed_surface_variant_keys(row, morphy, morphy_pos=morphy_pos)
+    support_keys = _observed_surface_variant_keys(
+        row,
+        morphy,
+        morphy_pos=morphy_pos,
+        attribute_mwe_mode=attribute_mwe_mode,
+    )
     candidate_lemmas = [lemma for lemma in all_lemmas if _surface_key(lemma) in support_keys]
     if not candidate_lemmas and len(all_lemmas) == 1:
         candidate_lemmas = all_lemmas[:]
@@ -281,10 +287,33 @@ def _observed_surface_variant_keys(
     morphy: Morphy,
     *,
     morphy_pos: tuple[str, ...] = ("n",),
+    attribute_mwe_mode: bool = False,
 ) -> set[str]:
     keys: set[str] = set()
-    for surface in _observed_surfaces(row):
-        keys.update(_surface_variants(surface))
+    surfaces = _observed_surfaces(row)
+    variant_fn = _attribute_mwe_surface_variants if attribute_mwe_mode else _surface_variants
+    for surface in surfaces:
+        keys.update(variant_fn(surface))
+    if attribute_mwe_mode:
+        for surface in surfaces:
+            words = [
+                word
+                for word in re.split(r"[\s_-]+", _surface_key(surface))
+                if word
+            ]
+            if len(words) < 2:
+                continue
+            anchor = words[-1]
+            for pos in morphy_pos:
+                result = morphy(anchor, pos)
+                lemmas = result.get(pos, set()) if result else set()
+                for lemma in lemmas:
+                    keys.update(
+                        _attribute_mwe_surface_variants(
+                            " ".join([*words[:-1], str(lemma)])
+                        )
+                    )
+        return {key for key in keys if key}
     for key in list(keys):
         for pos in morphy_pos:
             result = morphy(key, pos)
@@ -322,6 +351,25 @@ def _surface_variants(text: str) -> set[str]:
     underscore_variant = _surface_key(text.replace("-", "_").replace(" ", "_"))
     joined_variant = "".join(exact.replace("-", " ").split())
     return {value for value in (exact, separator_variant, underscore_variant, joined_variant) if value}
+
+
+def _attribute_mwe_surface_variants(text: str) -> set[str]:
+    words = [
+        word
+        for word in re.split(r"[\s_-]+", _surface_key(text))
+        if word
+    ]
+    if len(words) < 2:
+        return {_surface_key(text)} if _surface_key(text) else set()
+    return {
+        value
+        for value in (
+            _surface_key(" ".join(words)),
+            _surface_key("-".join(words)),
+            _surface_key("_".join(words)),
+        )
+        if value
+    }
 
 
 def _ngram_candidate_surfaces(

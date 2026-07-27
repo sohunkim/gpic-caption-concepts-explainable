@@ -37,6 +37,7 @@ from gpic_concepts_v1.cli_memory import add_memory_safety_args, memory_safety_kw
 from gpic_concepts_v1.io_jsonl import iter_jsonl, open_text  # noqa: E402
 from gpic_concepts_v1.stage4_extract_raw import (  # noqa: E402
     load_gpic_action_inventory,
+    load_gpic_attribute_mwe_inventory,
     load_gpic_object_inventory,
     load_preposition_mwe_lexicon,
     run_stage4_extract_raw,
@@ -488,6 +489,9 @@ def run_one_shard(shard_input: ShardInput) -> dict[str, Any]:
 
     start = time.perf_counter()
     object_lookup = load_gpic_object_inventory(Path(shard_input.object_inventory))
+    attribute_mwe_lookup = load_gpic_attribute_mwe_inventory(
+        Path(shard_input.attribute_inventory)
+    )
     action_lookup = load_gpic_action_inventory(Path(shard_input.action_inventory))
     preposition_mwe_lookup = (
         load_preposition_mwe_lexicon(Path(shard_input.preposition_mwe_lexicon))
@@ -503,6 +507,7 @@ def run_one_shard(shard_input: ShardInput) -> dict[str, Any]:
         raw_edges_path=stage4_dir / "raw_edges.jsonl",
         summary_path=stage4_dir / "summary.jsonl",
         object_lookup=object_lookup,
+        attribute_mwe_lookup=attribute_mwe_lookup,
         action_lookup=action_lookup,
         preposition_mwe_lookup=preposition_mwe_lookup,
         progress_path=stage4_dir / "progress.json",
@@ -1380,7 +1385,7 @@ def _merged_pipe_field(values: list[str]) -> str:
     nonempty = [value for value in values if value]
     if not nonempty:
         return ""
-    if len(nonempty) == 1:
+    if len(set(nonempty)) == 1:
         return nonempty[0]
     merged: set[str] = set()
     for value in nonempty:

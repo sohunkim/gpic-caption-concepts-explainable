@@ -48,6 +48,22 @@ class FakeObjectLookupResult:
         self.canonical_label_key = canonical_label_key
 
 
+class FakeMweOewn:
+    def __init__(self, synsets_by_query):
+        self.synsets_by_query = synsets_by_query
+
+    def synsets(self, query):
+        return self.synsets_by_query.get(query, ())
+
+
+class FakeMorphy:
+    def __init__(self, results_by_surface):
+        self.results_by_surface = results_by_surface
+
+    def __call__(self, surface, pos):
+        return self.results_by_surface.get(surface, {})
+
+
 def token(
     i: int,
     text: str,
@@ -93,6 +109,393 @@ def chunk(text: str, root_i: int, start: int, end: int) -> dict[str, object]:
 
 
 class BuildGpicObservedAttributeInventoryTest(unittest.TestCase):
+    def test_attribute_mwe_lookup_uses_separator_variant_and_lemma_evidence(self) -> None:
+        synset = FakeSynset("fake-dark-brown-a", "adj.all", ("dark-brown",))
+        oewn = FakeMweOewn({"dark-brown": (synset,)})
+
+        result = attribute_script._lookup_attribute_mwe_surface(
+            "dark brown",
+            oewn=oewn,
+            morphy=FakeMorphy({}),
+        )
+
+        self.assertEqual(result.lookup_case, "mwe_hyphen_variant")
+        self.assertEqual(result.query, "dark-brown")
+        self.assertEqual(result.synsets, (synset,))
+        self.assertNotIn("darkbrown", result.lookup_forms)
+
+    def test_attribute_mwe_lookup_morphs_only_anchor(self) -> None:
+        synset = FakeSynset("fake-cube-shape-a", "adj.all", ("cube-shape",))
+        oewn = FakeMweOewn({"cube-shape": (synset,)})
+
+        result = attribute_script._lookup_attribute_mwe_surface(
+            "cube shaped",
+            oewn=oewn,
+            morphy=FakeMorphy({"shaped": {"a": {"shape"}}}),
+        )
+
+        self.assertEqual(result.lookup_case, "mwe_anchor_morphy_hyphen")
+        self.assertEqual(result.query, "cube-shape")
+        self.assertNotIn("cubeshape", result.lookup_forms)
+
+    def test_attribute_mwe_lookup_rejects_synset_without_matching_lemma(self) -> None:
+        unrelated = FakeSynset("fake-unrelated-a", "adj.all", ("brown",))
+        result = attribute_script._lookup_attribute_mwe_surface(
+            "dark brown",
+            oewn=FakeMweOewn({"dark brown": (unrelated,)}),
+            morphy=FakeMorphy({}),
+        )
+
+        self.assertEqual(result.synsets, ())
+        self.assertEqual(result.decision_reason, "no_oewn_attribute_synset")
+
+    def test_oewn_valid_longest_attribute_mwe_suppresses_internal_singles(self) -> None:
+        record = {
+            "caption_id": "c-light-brown",
+            "tokens": [
+                token(0, "light", "light", "ADJ", "compound", 1, tag="JJ"),
+                token(1, "brown", "brown", "ADJ", "amod", 2, tag="JJ"),
+                token(2, "moth", "moth", "NOUN", "ROOT", 2, tag="NN"),
+            ],
+            "noun_chunks": [chunk("light brown moth", 2, 0, 3)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "moth" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type != "mwe" or surface != "light brown":
+                return None
+            synset = FakeSynset("fake-light-brown-a", "adj.all", ("light_brown",))
+            return attribute_script.AttributeLookupResult(
+                "mwe_exact",
+                "light brown",
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+                lookup_forms=("light brown",),
+            )
+
+        rows, summary = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual([row["span_key"] for row in rows], ["light brown"])
+        self.assertEqual(rows[0]["attribute_unit_type"], "mwe")
+        self.assertEqual(rows[0]["span_token_count"], "2")
+        self.assertEqual(rows[0]["anchor_token_offset"], "1")
+        self.assertEqual(summary["attribute_unit_type_counts"], {"mwe": 1})
+
+    def test_attribute_mwe_conjunction_is_split_by_branch(self) -> None:
+        record = {
+            "caption_id": "c-color-branches",
+            "tokens": [
+                token(0, "dark", "dark", "ADJ", "compound", 1, tag="JJ"),
+                token(1, "brown", "brown", "ADJ", "amod", 5, tag="JJ"),
+                token(2, "and", "and", "CCONJ", "cc", 1, tag="CC"),
+                token(3, "bright", "bright", "ADJ", "compound", 4, tag="JJ"),
+                token(4, "blue", "blue", "ADJ", "conj", 1, tag="JJ"),
+                token(5, "jersey", "jersey", "NOUN", "ROOT", 5, tag="NN"),
+            ],
+            "noun_chunks": [chunk("dark brown and bright blue jersey", 5, 0, 6)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "jersey" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type != "mwe" or surface not in {"dark brown", "bright blue"}:
+                return None
+            synset = FakeSynset(f"fake-{surface}-a", "adj.all", (surface.replace(" ", "_"),))
+            return attribute_script.AttributeLookupResult(
+                "mwe_exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+                lookup_forms=(surface,),
+            )
+
+        rows, _ = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(
+            {(row["attribute_unit_type"], row["span_key"]) for row in rows},
+            {("mwe", "dark brown"), ("mwe", "bright blue")},
+        )
+
+    def test_conjunct_branch_mwe_is_counted_and_replaces_its_single_anchor(self) -> None:
+        record = {
+            "caption_id": "c-conj-light-blue",
+            "tokens": [
+                token(0, "white", "white", "ADJ", "amod", 4, tag="JJ"),
+                token(1, "and", "and", "CCONJ", "cc", 0, tag="CC"),
+                token(2, "light", "light", "ADJ", "amod", 3, tag="JJ"),
+                token(3, "blue", "blue", "ADJ", "conj", 0, tag="JJ"),
+                token(4, "jerseys", "jersey", "NOUN", "ROOT", 4, tag="NNS"),
+            ],
+            "noun_chunks": [chunk("white and light blue jerseys", 4, 0, 5)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "jerseys" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type == "mwe" and surface == "light blue":
+                synset = FakeSynset(
+                    "fake-light-blue-a",
+                    "adj.all",
+                    ("light-blue",),
+                )
+                return attribute_script.AttributeLookupResult(
+                    "mwe_hyphen_variant",
+                    "light-blue",
+                    (synset,),
+                    synset,
+                    "single_oewn_attribute_synset",
+                    "",
+                    "attribute_compatible",
+                    "chosen",
+                    "selected_attribute_compatible",
+                    lookup_forms=("light blue", "light-blue"),
+                )
+            if attribute_unit_type == "single_token" and surface == "white":
+                synset = FakeSynset("fake-white-a", "adj.all", ("white",))
+                return attribute_script.AttributeLookupResult(
+                    "exact",
+                    "white",
+                    (synset,),
+                    synset,
+                    "single_oewn_attribute_synset",
+                    "",
+                    "attribute_compatible",
+                    "chosen",
+                    "selected_attribute_compatible",
+                )
+            return None
+
+        rows, _ = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(
+            {
+                (row["attribute_unit_type"], row["span_key"], row["count"])
+                for row in rows
+            },
+            {
+                ("mwe", "light blue", "1"),
+                ("single_token", "white", "1"),
+            },
+        )
+
+    def test_excluded_longer_candidate_is_retained_but_does_not_hide_shorter_mwe(
+        self,
+    ) -> None:
+        record = {
+            "caption_id": "c-light-blue-collared",
+            "tokens": [
+                token(0, "light", "light", "ADJ", "amod", 1, tag="JJ"),
+                token(1, "blue", "blue", "ADJ", "amod", 3, tag="JJ"),
+                token(2, "collared", "collared", "ADJ", "amod", 3, tag="JJ"),
+                token(3, "shirt", "shirt", "NOUN", "ROOT", 3, tag="NN"),
+            ],
+            "noun_chunks": [chunk("light blue collared shirt", 3, 0, 4)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "shirt" else None
+
+        def mwe_result(
+            surface: str,
+            *,
+            status: str,
+        ) -> attribute_script.AttributeLookupResult:
+            synset = FakeSynset(
+                f"fake-{surface}-a",
+                "adj.all",
+                (surface.replace(" ", "-"),),
+            )
+            return attribute_script.AttributeLookupResult(
+                "mwe_hyphen_variant",
+                surface.replace(" ", "-"),
+                (synset,),
+                synset if status == "chosen" else None,
+                "manual_rejected_all_candidate_senses"
+                if status == "excluded"
+                else "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible" if status == "chosen" else "",
+                status,
+                "selected_attribute_compatible"
+                if status == "chosen"
+                else "manual_reject_synset_meaning_not_attribute_mwe",
+                lookup_forms=(surface, surface.replace(" ", "-")),
+            )
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type != "mwe":
+                return None
+            if surface == "blue collared":
+                return mwe_result(surface, status="excluded")
+            if surface == "light blue":
+                return mwe_result(surface, status="chosen")
+            return None
+
+        rows, _ = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+            attribute_unit_mode="mwe_only",
+        )
+
+        self.assertEqual(
+            {
+                (row["span_key"], row["decision_status"], row["count"])
+                for row in rows
+            },
+            {
+                ("blue collared", "excluded", "1"),
+                ("light blue", "chosen", "1"),
+            },
+        )
+
+    def test_object_core_wins_over_overlapping_attribute_mwe(self) -> None:
+        record = {
+            "caption_id": "c-bright-blue-sky",
+            "tokens": [
+                token(0, "bright", "bright", "ADJ", "amod", 1, tag="JJ"),
+                token(1, "blue", "blue", "ADJ", "compound", 2, tag="JJ"),
+                token(2, "sky", "sky", "NOUN", "ROOT", 2, tag="NN"),
+            ],
+            "noun_chunks": [chunk("bright blue sky", 2, 0, 3)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "blue sky" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type == "mwe":
+                raise AssertionError("MWE lookup must not cross the selected object core")
+            synset = FakeSynset("fake-bright-a", "adj.all", ("bright",))
+            return attribute_script.AttributeLookupResult(
+                "exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+            )
+
+        rows, _ = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(
+            [(row["attribute_unit_type"], row["span_key"]) for row in rows],
+            [("single_token", "bright")],
+        )
+
+    def test_objectless_tag_list_segment_discovers_full_attribute_mwe(self) -> None:
+        segment_tokens = [
+            token(0, "bright", "bright", "ADJ", "compound", 1, tag="JJ"),
+            token(1, "blue", "blue", "ADJ", "ROOT", 1, tag="JJ"),
+        ]
+        record = {
+            "caption_id": "tag-bright-blue",
+            "tokens": segment_tokens,
+            "noun_chunks": [],
+            "tag_segments": [
+                {
+                    "segment_id": "segment-0",
+                    "text": "bright blue",
+                    "tokens": segment_tokens,
+                    "noun_chunks": [],
+                }
+            ],
+            "meta": {"caption_shape": "tag_list"},
+        }
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+            attribute_unit_type: str = "single_token",
+        ):
+            if attribute_unit_type != "mwe" or surface != "bright blue":
+                return None
+            synset = FakeSynset("fake-bright-blue-a", "adj.all", ("bright_blue",))
+            return attribute_script.AttributeLookupResult(
+                "mwe_exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+                lookup_forms=(surface,),
+            )
+
+        rows, summary = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=lambda _surface: None,
+            attribute_lookup=attribute_lookup,
+            attribute_unit_mode="mwe_only",
+        )
+
+        self.assertEqual(
+            [(row["attribute_unit_type"], row["span_key"]) for row in rows],
+            [("mwe", "bright blue")],
+        )
+        self.assertEqual(summary["attribute_candidate_total"], 1)
+
     def test_consumed_object_span_tokens_are_not_attribute_candidates(self) -> None:
         record = {
             "caption_id": "c1",
@@ -232,6 +635,137 @@ class BuildGpicObservedAttributeInventoryTest(unittest.TestCase):
 
         self.assertEqual(summary["attribute_candidate_total"], 1)
         self.assertEqual([row["span_key"] for row in rows], ["maroon"])
+
+    def test_conjunct_modifier_is_attribute_inventory_candidate(self) -> None:
+        record = {
+            "caption_id": "c-conj",
+            "tokens": [
+                token(0, "maroon", "maroon", "NOUN", "nmod", 3, tag="NN"),
+                token(1, "and", "and", "CCONJ", "cc", 0, tag="CC"),
+                token(2, "yellow", "yellow", "ADJ", "conj", 0, tag="JJ"),
+                token(3, "jerseys", "jersey", "NOUN", "ROOT", 3, tag="NNS"),
+            ],
+            "noun_chunks": [chunk("maroon and yellow jerseys", 3, 0, 4)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "jerseys" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+        ):
+            synset = FakeSynset(f"fake-{surface}-a", "adj.all", (surface,))
+            return attribute_script.AttributeLookupResult(
+                "exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+            )
+
+        rows, summary = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(summary["attribute_candidate_total"], 2)
+        self.assertEqual({row["span_key"] for row in rows}, {"maroon", "yellow"})
+
+    def test_chained_conjunct_modifiers_are_attribute_inventory_candidates(self) -> None:
+        record = {
+            "caption_id": "c-conj-chain",
+            "tokens": [
+                token(0, "blue", "blue", "ADJ", "amod", 5, tag="JJ"),
+                token(1, ",", ",", "PUNCT", "punct", 0, tag=","),
+                token(2, "white", "white", "ADJ", "conj", 0, tag="JJ"),
+                token(3, "and", "and", "CCONJ", "cc", 2, tag="CC"),
+                token(4, "yellow", "yellow", "ADJ", "conj", 2, tag="JJ"),
+                token(5, "jerseys", "jersey", "NOUN", "ROOT", 5, tag="NNS"),
+            ],
+            "noun_chunks": [chunk("blue, white, and yellow jerseys", 5, 0, 6)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "jerseys" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+        ):
+            synset = FakeSynset(f"fake-{surface}-a", "adj.all", (surface,))
+            return attribute_script.AttributeLookupResult(
+                "exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+            )
+
+        rows, summary = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(summary["attribute_candidate_total"], 3)
+        self.assertEqual(
+            {row["span_key"] for row in rows},
+            {"blue", "white", "yellow"},
+        )
+
+    def test_quantity_conjunct_is_not_attribute_inventory_candidate(self) -> None:
+        record = {
+            "caption_id": "c-conj-quantity",
+            "tokens": [
+                token(0, "several", "several", "ADJ", "amod", 3, tag="JJ"),
+                token(1, "and", "and", "CCONJ", "cc", 0, tag="CC"),
+                token(2, "three", "three", "NUM", "conj", 0, tag="CD"),
+                token(3, "cars", "car", "NOUN", "ROOT", 3, tag="NNS"),
+            ],
+            "noun_chunks": [chunk("several and three cars", 3, 0, 4)],
+        }
+
+        def object_lookup(surface: str):
+            return FakeObjectLookupResult(surface) if surface == "cars" else None
+
+        def attribute_lookup(
+            surface: str,
+            *,
+            require_surface_query_conflict_check: bool = False,
+        ):
+            synset = FakeSynset(f"fake-{surface}-a", "adj.all", (surface,))
+            return attribute_script.AttributeLookupResult(
+                "exact",
+                surface,
+                (synset,),
+                synset,
+                "single_oewn_attribute_synset",
+                "",
+                "attribute_compatible",
+                "chosen",
+                "selected_attribute_compatible",
+            )
+
+        rows, summary = attribute_script.build_attribute_inventory_rows(
+            [record],
+            object_lookup=object_lookup,
+            attribute_lookup=attribute_lookup,
+        )
+
+        self.assertEqual(summary["attribute_candidate_total"], 1)
+        self.assertEqual([row["span_key"] for row in rows], ["several"])
 
     def test_progress_writer_updates_during_record_scan(self) -> None:
         record = {

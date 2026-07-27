@@ -176,6 +176,31 @@ class FormalInventoryGateTest(unittest.TestCase):
 
         self.assertIn("--action-inventory is required", str(caught.exception))
 
+    def test_stage4_main_requires_attribute_inventory_for_formal_run(self) -> None:
+        tmp_path = _temp_base() / uuid.uuid4().hex
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = [
+                "run_stage4_extract_raw.py",
+                "--input",
+                str(tmp_path / "stage3.jsonl"),
+                "--allow-runtime-oewn-lookup",
+                "--allow-runtime-action-lookup-preview",
+                "--raw-mentions",
+                str(tmp_path / "raw_mentions.jsonl"),
+                "--raw-edges",
+                str(tmp_path / "raw_edges.jsonl"),
+            ]
+
+            with self.assertRaises(SystemExit) as caught:
+                self.stage4_runner.main()
+        finally:
+            sys.argv = original_argv
+            _remove_tree(tmp_path)
+
+        self.assertIn("--attribute-inventory is required", str(caught.exception))
+
     def test_stage5_runner_blocks_pending_attribute_inventory(self) -> None:
         tmp_path = _temp_base() / uuid.uuid4().hex
         tmp_path.mkdir(parents=True, exist_ok=True)

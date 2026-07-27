@@ -28,10 +28,12 @@ from gpic_concepts_v1.pipeline_state import (
 from gpic_concepts_v1.stage4_extract_raw import (
     _load_object_lookup_runtime,
     load_gpic_action_inventory,
+    load_gpic_attribute_mwe_inventory,
     load_gpic_object_inventory,
     load_preposition_mwe_lexicon,
     run_stage4_extract_raw,
 )
+from run_stage5_canonicalize import _raise_if_attribute_inventory_not_ready
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +69,13 @@ def parse_args() -> argparse.Namespace:
         help=(
             "GPIC-observed object span inventory TSV. This must be generated "
             "from GPIC captions, not external source-label datasets."
+        ),
+    )
+    parser.add_argument(
+        "--attribute-inventory",
+        help=(
+            "Resolved GPIC-observed attribute inventory TSV. Formal Stage 4 "
+            "uses its MWE rows as the attribute span matcher."
         ),
     )
     parser.add_argument(
@@ -111,6 +120,10 @@ def main() -> None:
             "Use --allow-runtime-action-lookup-preview only for OEWN "
             "action lookup preview/debug runs."
         )
+    if not args.attribute_inventory:
+        raise SystemExit(
+            "--attribute-inventory is required for formal Stage 4 extraction."
+        )
     if args.object_inventory:
         object_inventory_path = Path(args.object_inventory)
         _raise_if_object_inventory_not_ready(object_inventory_path)
@@ -128,6 +141,11 @@ def main() -> None:
         action_lookup = load_gpic_action_inventory(action_inventory_path)
     elif args.allow_runtime_action_lookup_preview:
         action_lookup = _load_object_lookup_runtime()
+    attribute_inventory_path = Path(args.attribute_inventory)
+    _raise_if_attribute_inventory_not_ready(attribute_inventory_path)
+    attribute_mwe_lookup = load_gpic_attribute_mwe_inventory(
+        attribute_inventory_path
+    )
     preposition_mwe_lookup = (
         load_preposition_mwe_lexicon(Path(args.preposition_mwe_lexicon))
         if args.preposition_mwe_lexicon
@@ -140,6 +158,7 @@ def main() -> None:
         summary_path=args.summary,
         limit=args.limit,
         object_lookup=object_lookup,
+        attribute_mwe_lookup=attribute_mwe_lookup,
         action_lookup=action_lookup,
         preposition_mwe_lookup=preposition_mwe_lookup,
         **memory_safety_kwargs(args),

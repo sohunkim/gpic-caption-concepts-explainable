@@ -241,6 +241,41 @@ class Stage456ShardedTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(rows[0]["raw_variants"], raw)
 
+    def test_merge_preserves_repeated_raw_variant_containing_literal_pipe(self) -> None:
+        spec = next(item for item in COUNT_TABLE_SPECS if item.file_name == "object_counts.tsv")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shard_a = root / "a.tsv"
+            shard_b = root / "b.tsv"
+            output = root / "merged.tsv"
+            raw = '"i.c.stars | milwaukee."'
+            base_row = {
+                "count_key": f"object:{raw}",
+                "object": raw,
+                "parent_concepts": "",
+                "parent_synset_ids": "",
+                "count": "1",
+                "caption_count": "1",
+                "raw_variants": raw,
+                "rule_ids": "R12",
+            }
+            _write_rows(
+                shard_a,
+                [{**base_row, "example_caption_ids": "c1"}],
+            )
+            _write_rows(
+                shard_b,
+                [{**base_row, "example_caption_ids": "c2"}],
+            )
+
+            merge_count_table_shards(spec, [shard_a, shard_b], output)
+
+            with output.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[0]["raw_variants"], raw)
+            self.assertEqual(rows[0]["count"], "2")
+            self.assertEqual(rows[0]["caption_count"], "2")
+
     def test_partitioned_merge_matches_single_pass_output_bytes(self) -> None:
         spec = next(
             item

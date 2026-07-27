@@ -9,7 +9,7 @@ import socket
 import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,23 @@ gate = _load_module()
 
 
 class IncidentGateTest(unittest.TestCase):
+    def test_cli_streams_use_utf8_when_reconfigure_is_available(self) -> None:
+        stdout = Mock()
+        stderr = Mock()
+        with (
+            patch.object(gate.sys, "stdout", stdout),
+            patch.object(gate.sys, "stderr", stderr),
+        ):
+            gate.configure_cli_streams()
+        stdout.reconfigure.assert_called_once_with(
+            encoding="utf-8",
+            errors="backslashreplace",
+        )
+        stderr.reconfigure.assert_called_once_with(
+            encoding="utf-8",
+            errors="backslashreplace",
+        )
+
     def setUp(self) -> None:
         self.tmp = ROOT / ".tmp_tests" / self.id().replace(".", "_")
         if self.tmp.exists():
@@ -167,6 +184,7 @@ class IncidentGateTest(unittest.TestCase):
             guard_added="durable guard",
             verification_evidence="bounded test passed",
             verification_command=[sys.executable, "-c", "raise SystemExit(0)"],
+            verification_timeout_seconds=5,
             state_dir=self.state_dir,
         )
 
@@ -204,6 +222,7 @@ class IncidentGateTest(unittest.TestCase):
             guard_added="durable guard",
             verification_evidence="guarded smoke run passed",
             verification_command=command,
+            verification_timeout_seconds=30,
             state_dir=self.state_dir,
         )
 
@@ -230,6 +249,7 @@ class IncidentGateTest(unittest.TestCase):
                 "-c",
                 "import sys; sys.stdout.buffer.write('verified \u2713\\n'.encode('utf-8'))",
             ],
+            verification_timeout_seconds=5,
             state_dir=self.state_dir,
         )
 
@@ -252,8 +272,56 @@ class IncidentGateTest(unittest.TestCase):
                 guard_added="durable guard",
                 verification_evidence="verification command should be explicit",
                 verification_command=[r".\scripts\run_python.ps1", "-c", "print('bad')"],
+                verification_timeout_seconds=5,
                 state_dir=self.state_dir,
             )
+
+    def test_clear_verification_requires_positive_timeout(self) -> None:
+        gate.create_incident(
+            failure_type="test_failure",
+            summary="unbounded verification incident",
+            state_dir=self.state_dir,
+        )
+
+        with self.assertRaisesRegex(
+            gate.IncidentGateError,
+            "unbounded incident verification is forbidden",
+        ):
+            gate.clear_incident(
+                root_cause="root cause",
+                guard_added="bounded verification guard",
+                verification_evidence="timeout requirement tested",
+                verification_command=[sys.executable, "-c", "raise SystemExit(0)"],
+                state_dir=self.state_dir,
+            )
+
+        self.assertTrue(gate.incident_path(self.state_dir).exists())
+
+    def test_clear_verification_timeout_keeps_incident_open(self) -> None:
+        gate.create_incident(
+            failure_type="test_failure",
+            summary="timed verification incident",
+            state_dir=self.state_dir,
+        )
+
+        with self.assertRaisesRegex(
+            gate.IncidentGateError,
+            "verification command timed out",
+        ):
+            gate.clear_incident(
+                root_cause="root cause",
+                guard_added="bounded verification guard",
+                verification_evidence="timeout path tested",
+                verification_command=[
+                    sys.executable,
+                    "-c",
+                    "import time; time.sleep(10)",
+                ],
+                verification_timeout_seconds=1,
+                state_dir=self.state_dir,
+            )
+
+        self.assertTrue(gate.incident_path(self.state_dir).exists())
 
     def test_history_append_permission_error_uses_fallback_history_file(self) -> None:
         calls = []

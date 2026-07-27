@@ -27,6 +27,7 @@ from gpic_concepts_v1.stage3_annotate import (
 from gpic_concepts_v1.stage4_extract_raw import (
     extract_raw_concepts_from_doc,
     extract_raw_concepts_from_stage3_record,
+    load_gpic_attribute_mwe_inventory,
     load_gpic_object_inventory,
 )
 from gpic_concepts_v1.stage5_canonicalize import (
@@ -106,6 +107,10 @@ def parse_args() -> argparse.Namespace:
             "GPIC-observed object span inventory TSV for Stage 4. "
             "Do not pass COCO/LVIS/Objects365/OpenImages/Visual Genome source-label files here."
         ),
+    )
+    parser.add_argument(
+        "--attribute-inventory",
+        help="Resolved GPIC-observed attribute inventory TSV for Stage 4 MWE matching.",
     )
     parser.add_argument(
         "--allow-runtime-oewn-lookup",
@@ -263,6 +268,11 @@ def main() -> None:
             "--object-inventory is required for benchmark Stage 4 extraction. "
             "Use --allow-runtime-oewn-lookup only for OEWN probe/debug runs."
         )
+    if not args.attribute_inventory:
+        raise SystemExit("--attribute-inventory is required for benchmark Stage 4 extraction.")
+    attribute_mwe_lookup = load_gpic_attribute_mwe_inventory(
+        args.attribute_inventory
+    )
     setup_seconds = perf_counter() - setup_start
 
     gpu_metadata_start = perf_counter()
@@ -298,6 +308,7 @@ def main() -> None:
                 annotated.caption_id,
                 annotated.doc,
                 object_lookup=object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
             )
             stage4_seconds += perf_counter() - stage4_start
             raw_mentions.extend(result.raw_mentions)
@@ -315,6 +326,7 @@ def main() -> None:
             result = extract_raw_concepts_from_stage3_record(
                 stage3_record.to_dict(),
                 object_lookup=object_lookup,
+                attribute_mwe_lookup=attribute_mwe_lookup,
             )
             stage4_seconds += perf_counter() - stage4_start
             raw_mentions.extend(result.raw_mentions)

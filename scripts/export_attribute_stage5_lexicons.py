@@ -13,6 +13,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer
+from gpic_concepts_v1.attribute_units import (
+    ATTRIBUTE_UNIT_MWE,
+    separator_equivalent_key,
+)
 from gpic_concepts_v1.pipeline_state import (
     build_stage5_lexicon_bundle_state,
     output_dir_state_path,
@@ -87,10 +91,38 @@ def export_attribute_stage5_lexicons(
     rows = _read_tsv(attribute_inventory_path)
     base_rows = _read_base_lexicons(base_lexicon_dir)
 
-    synonym_rows = list(base_rows["attribute_synonyms.tsv"])
+    authoritative_mwe_raw_keys = {
+        raw_key
+        for row in rows
+        if row.get("attribute_unit_type", "").strip() == "mwe"
+        for raw_key in _observed_surface_keys(row)
+    }
+    synonym_rows: list[dict[str, str]] = []
+    replaced_stale_attribute_mwe_synonym_rows = 0
+    for row in base_rows["attribute_synonyms.tsv"]:
+        raw_key = _key(row.get("raw", ""))
+        if (
+            raw_key in authoritative_mwe_raw_keys
+            and row.get("source", "").strip()
+            == "gpic_observed_attribute_inventory"
+        ):
+            replaced_stale_attribute_mwe_synonym_rows += 1
+            continue
+        synonym_rows.append(row)
     type_rows: list[dict[str, str]] = []
     action_synonym_rows = list(base_rows["action_synonyms.tsv"])
-    synonym_keys = {_key(row["raw"]) for row in synonym_rows if row.get("raw")}
+    synonym_canonical_by_key: dict[str, str] = {}
+    for synonym_row in synonym_rows:
+        raw_key = _key(synonym_row.get("raw", ""))
+        canonical_key = _key(synonym_row.get("canonical", ""))
+        if not raw_key:
+            continue
+        existing = synonym_canonical_by_key.get(raw_key)
+        if existing is not None and existing != canonical_key:
+            raise ValueError(
+                f"conflicting base attribute synonym: {raw_key} -> {existing} / {canonical_key}"
+            )
+        synonym_canonical_by_key[raw_key] = canonical_key
     action_synonym_keys = {
         _key(row["raw"]) for row in action_synonym_rows if row.get("raw")
     }
@@ -123,7 +155,14 @@ def export_attribute_stage5_lexicons(
                 continue
             else:
                 for raw_key in raw_keys:
-                    if raw_key in synonym_keys:
+                    canonical_key = _key(canonical_surface)
+                    existing = synonym_canonical_by_key.get(raw_key)
+                    if existing is not None:
+                        if existing != canonical_key:
+                            raise ValueError(
+                                "conflicting attribute synonym mapping: "
+                                f"{raw_key} -> {existing} / {canonical_key}"
+                            )
                         continue
                     synonym_rows.append(
                         {
@@ -133,7 +172,7 @@ def export_attribute_stage5_lexicons(
                             "notes": _notes(row, "chosen_canonical_synonym"),
                         }
                     )
-                    synonym_keys.add(raw_key)
+                    synonym_canonical_by_key[raw_key] = canonical_key
                     chosen_synonym_rows += 1
         else:
             if status == "excluded" and canonical_surface:
@@ -183,6 +222,9 @@ def export_attribute_stage5_lexicons(
         "attribute_type_rows_deferred": attribute_type_rows_deferred,
         "legacy_no_synset_status_rows": legacy_no_synset_status_rows,
         "ignored_excluded_canonical_rows": ignored_excluded_canonical_rows,
+        "replaced_stale_attribute_mwe_synonym_rows": (
+            replaced_stale_attribute_mwe_synonym_rows
+        ),
     }
     write_pipeline_state(
         output_dir_state_path(output_dir),
@@ -308,15 +350,20 @@ def _key(value: str) -> str:
 def _observed_surface_keys(row: Mapping[str, str]) -> tuple[str, ...]:
     keys: list[str] = []
     seen: set[str] = set()
+    unit_type = row.get("attribute_unit_type", "").strip()
     for raw in (
         row.get("span_key", ""),
         row.get("observed_surface", ""),
         *_split_pipe(row.get("example_surfaces", "")),
+        *_split_pipe(row.get("lookup_forms", "")),
     ):
-        key = _key(raw)
-        if key and key not in seen:
-            keys.append(key)
-            seen.add(key)
+        candidates = [_key(raw)]
+        if unit_type == ATTRIBUTE_UNIT_MWE:
+            candidates.append(separator_equivalent_key(raw))
+        for key in candidates:
+            if key and key not in seen:
+                keys.append(key)
+                seen.add(key)
     return tuple(keys)
 
 

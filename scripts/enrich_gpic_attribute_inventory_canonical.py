@@ -91,6 +91,7 @@ def main() -> None:
             morphy=morphy,
             ngram_evidence=ngram_evidence,
             morphy_pos=ATTRIBUTE_CANONICAL_MORPHY_POS,
+            attribute_mwe_mode=row.get("attribute_unit_type", "").strip() == "mwe",
         )
         row.update(decision)
         if row["canonical_surface"]:

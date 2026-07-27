@@ -1148,19 +1148,17 @@ def write_static_report_files(output_dir: Path, *, title: str) -> None:
     _atomic_write_text(assets_dir / "report.css", REPORT_CSS)
     _atomic_write_text(assets_dir / "report.js", REPORT_JS)
     repo_python = Path(sys.executable)
+    controller_script = Path(__file__).with_name(
+        "run_report_server_operation.py"
+    ).resolve()
     start_bat = f"""@echo off
 setlocal
 cd /d "%~dp0"
-rem Optional sharing settings:
-set REPORT_USER=gpic
-set REPORT_PASSWORD=1234
-rem   set REPORT_HOST=0.0.0.0
 set PY={repo_python}
-if exist "%PY%" (
-  "%PY%" report_server.py
-) else (
-  python report_server.py
-)
+set CONTROLLER={controller_script}
+if not exist "%PY%" exit /b 1
+if not exist "%CONTROLLER%" exit /b 1
+"%PY%" "%CONTROLLER%" --operation-timeout-seconds 60 -- start --report-dir "." --state-dir "%TEMP%\\gpic_report_server_state" --state-name "{output_dir.name}_8765" --host 127.0.0.1 --port 8765 --user gpic --password 1234 --readiness-timeout-seconds 30
 """
     _atomic_write_text(output_dir / "start_report.bat", start_bat)
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +188,30 @@ class PublishInventoryBundleTest(unittest.TestCase):
 
         with self.assertRaisesRegex(FileNotFoundError, "missing_action_inventory_pipeline_state"):
             publish.publish_inventory_bundle(source_bundle=bundle, target_dir=target)
+
+    def test_replace_tree_restores_existing_tree_when_swap_fails(self) -> None:
+        source = self.tmp / "source_lexicons"
+        target = self.tmp / "target_lexicons"
+        source.mkdir()
+        target.mkdir()
+        (source / "new.tsv").write_text("new\n", encoding="utf-8")
+        (target / "old.tsv").write_text("old\n", encoding="utf-8")
+        real_replace = publish.os.replace
+        calls = 0
+
+        def fail_second_replace(left, right):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated swap failure")
+            return real_replace(left, right)
+
+        with patch.object(publish.os, "replace", side_effect=fail_second_replace):
+            with self.assertRaisesRegex(OSError, "simulated swap failure"):
+                publish._replace_tree(source, target)
+
+        self.assertTrue((target / "old.tsv").is_file())
+        self.assertFalse((target / "new.tsv").exists())
 
 
 def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:

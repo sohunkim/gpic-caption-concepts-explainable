@@ -171,13 +171,24 @@ class Stage6ExportCountsTest(unittest.TestCase):
 
         attribute_rows = result.count_tables["attribute_counts.tsv"]
         attribute_keys = {row.count_key for row in attribute_rows}
-        self.assertEqual(attribute_keys, {"attribute:red", "attribute:two"})
         self.assertEqual(
-            next(row for row in attribute_rows if row.count_key == "attribute:red").values["attribute_kind"],
+            attribute_keys,
+            {"attribute:red:attribute", "attribute:two:quantity"},
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in attribute_rows
+                if row.count_key == "attribute:red:attribute"
+            ).values["attribute_kind"],
             "attribute",
         )
         self.assertEqual(
-            next(row for row in attribute_rows if row.count_key == "attribute:two").values["attribute_kind"],
+            next(
+                row
+                for row in attribute_rows
+                if row.count_key == "attribute:two:quantity"
+            ).values["attribute_kind"],
             "quantity",
         )
         object_rows = result.count_tables["object_counts.tsv"]
@@ -221,16 +232,46 @@ class Stage6ExportCountsTest(unittest.TestCase):
         object_attribute_keys = {row.count_key for row in object_attribute_rows}
         self.assertEqual(
             object_attribute_keys,
-            {"object_attribute_pair:dog:red", "object_attribute_pair:dog:two"},
+            {
+                "object_attribute_pair:dog:red:attribute",
+                "object_attribute_pair:dog:two:quantity",
+            },
         )
         self.assertNotIn("attribute_type", object_attribute_rows[0].values)
         self.assertEqual(
             next(
                 row
                 for row in object_attribute_rows
-                if row.count_key == "object_attribute_pair:dog:two"
+                if row.count_key == "object_attribute_pair:dog:two:quantity"
             ).values["attribute_kind"],
             "quantity",
+        )
+
+    def test_attribute_kind_is_part_of_attribute_and_pair_keys(self) -> None:
+        mentions = [
+            mention("c1", "m0", "object", "vehicles", "R19"),
+            mention("c1", "m1", "attribute", "few", "R20"),
+            mention("c1", "m2", "quantity", "few", "R21"),
+        ]
+        edges = [
+            edge("c1", "e0", "has_attribute", "m0", "m1", "has_attribute", "R13"),
+            edge("c1", "e1", "has_quantity", "m0", "m2", "has_quantity", "R14"),
+        ]
+
+        result = export_count_facts(mentions, edges)
+
+        attribute_rows = result.count_tables["attribute_counts.tsv"]
+        self.assertEqual(
+            {row.count_key for row in attribute_rows},
+            {"attribute:few:attribute", "attribute:few:quantity"},
+        )
+        pair_rows = result.count_tables["object_attribute_pair_counts.tsv"]
+        self.assertEqual(
+            {row.count_key for row in pair_rows},
+            {
+                "object_attribute_pair:vehicles:few:attribute",
+                "object_attribute_pair:vehicles:few:quantity",
+            },
         )
 
     def test_ambiguous_relation_candidate_count_is_per_mwe_occurrence(self) -> None:
