@@ -371,9 +371,9 @@ class CanaryCanonicalT5ExactRawLexiconTest(unittest.TestCase):
         self.assertEqual(stats["mean_absolute_error"], 2.0)
         self.assertEqual(stats["mean_absolute_percentage_error"], 100.0)
 
-    def test_summary_count_percent_formatter_uses_group_total(self) -> None:
-        self.assertEqual(MODULE._fmt_count_percent(3, 8), "3 (37.5%)")
-        self.assertEqual(MODULE._fmt_count_percent(0, 0), "0 (N/A)")
+    def test_summary_percent_formatter_uses_group_total(self) -> None:
+        self.assertEqual(MODULE._fmt_band_percent(3, 8), "37.5%")
+        self.assertEqual(MODULE._fmt_band_percent(0, 0), "N/A")
 
 
 if __name__ == "__main__":

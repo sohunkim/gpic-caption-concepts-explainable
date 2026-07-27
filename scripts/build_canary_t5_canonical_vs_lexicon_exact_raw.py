@@ -576,8 +576,9 @@ def _render_markdown(result: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         "## Difference Band Summary",
         "",
-        "| difference band | Entity | Attribute | Entity-Attribute Pair |",
-        "|---|---:|---:|---:|",
+        "| difference band | Entity count | Entity % | Attribute count | "
+        "Attribute % | Entity-Attribute Pair count | Entity-Attribute Pair % |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     summary = result["difference_band_summary"]
     totals = {
@@ -590,18 +591,15 @@ def _render_markdown(result: dict[str, Any], args: argparse.Namespace) -> str:
             _table_row(
                 [
                     band,
-                    _fmt_count_percent(
-                        summary["entities"][band],
-                        totals["entities"],
-                    ),
-                    _fmt_count_percent(
+                    _fmt(summary["entities"][band]),
+                    _fmt_band_percent(summary["entities"][band], totals["entities"]),
+                    _fmt(summary["attributes"][band]),
+                    _fmt_band_percent(
                         summary["attributes"][band],
                         totals["attributes"],
                     ),
-                    _fmt_count_percent(
-                        summary["pairs"][band],
-                        totals["pairs"],
-                    ),
+                    _fmt(summary["pairs"][band]),
+                    _fmt_band_percent(summary["pairs"][band], totals["pairs"]),
                 ],
             ),
         )
@@ -781,10 +779,10 @@ def _fmt_decimal(value: float | None, *, places: int) -> str:
     return f"{value:,.{places}f}"
 
 
-def _fmt_count_percent(count: int, total: int) -> str:
+def _fmt_band_percent(count: int, total: int) -> str:
     if total <= 0:
-        return f"{_fmt(count)} (N/A)"
-    return f"{_fmt(count)} ({count / total * 100.0:.1f}%)"
+        return "N/A"
+    return f"{count / total * 100.0:.1f}%"
 
 
 if __name__ == "__main__":
