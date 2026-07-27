@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -231,6 +232,11 @@ def build_comparison(
             "attributes": _difference_band_counts(attribute_rows),
             "pairs": _difference_band_counts(pair_rows),
         },
+        "statistics": {
+            "entities": _aggregate_statistics(entity_rows),
+            "attributes": _aggregate_statistics(attribute_rows),
+            "pairs": _aggregate_statistics(pair_rows),
+        },
         "entities": sorted(
             entity_rows,
             key=lambda row: (-row["t5_caption_count"], row["entity"]),
@@ -298,6 +304,62 @@ def _difference_band_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     for row in rows:
         counts[row["difference_band"]] += 1
     return counts
+
+
+def _aggregate_statistics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    t5_values = [int(row["t5_caption_count"]) for row in rows]
+    lexicon_values = [int(row["lexicon_caption_count"]) for row in rows]
+    errors = [lexicon - t5 for t5, lexicon in zip(t5_values, lexicon_values)]
+    abs_errors = [abs(error) for error in errors]
+    percentage_errors = [
+        abs(error) / t5 * 100.0
+        for t5, error in zip(t5_values, errors)
+        if t5 > 0
+    ]
+    t5_total = sum(t5_values)
+    lexicon_total = sum(lexicon_values)
+    pearson_r = _pearson_correlation(t5_values, lexicon_values)
+    return {
+        "rows": len(rows),
+        "t5_total": t5_total,
+        "lexicon_total": lexicon_total,
+        "total_diff": lexicon_total - t5_total,
+        "total_diff_percent": _relative_difference_percent(
+            lexicon_total,
+            t5_total,
+        ),
+        "pearson_r": pearson_r,
+        "r_squared": None if pearson_r is None else pearson_r * pearson_r,
+        "mean_absolute_error": (
+            None if not abs_errors else sum(abs_errors) / len(abs_errors)
+        ),
+        "mean_absolute_percentage_error": (
+            None
+            if not percentage_errors
+            else sum(percentage_errors) / len(percentage_errors)
+        ),
+    }
+
+
+def _pearson_correlation(
+    left_values: list[int],
+    right_values: list[int],
+) -> float | None:
+    if len(left_values) < 2 or len(left_values) != len(right_values):
+        return None
+    left_mean = sum(left_values) / len(left_values)
+    right_mean = sum(right_values) / len(right_values)
+    left_deltas = [value - left_mean for value in left_values]
+    right_deltas = [value - right_mean for value in right_values]
+    left_ss = sum(value * value for value in left_deltas)
+    right_ss = sum(value * value for value in right_deltas)
+    if left_ss == 0.0 or right_ss == 0.0:
+        return None
+    covariance = sum(
+        left * right
+        for left, right in zip(left_deltas, right_deltas)
+    )
+    return covariance / math.sqrt(left_ss * right_ss)
 
 
 def _canonical_attribute_count(
@@ -518,14 +580,63 @@ def _render_markdown(result: dict[str, Any], args: argparse.Namespace) -> str:
         "|---|---:|---:|---:|",
     ]
     summary = result["difference_band_summary"]
+    totals = {
+        "entities": len(result["entities"]),
+        "attributes": len(result["attributes"]),
+        "pairs": len(result["pairs"]),
+    }
     for band in DIFFERENCE_BANDS:
         lines.append(
             _table_row(
                 [
                     band,
-                    _fmt(summary["entities"][band]),
-                    _fmt(summary["attributes"][band]),
-                    _fmt(summary["pairs"][band]),
+                    _fmt_count_percent(
+                        summary["entities"][band],
+                        totals["entities"],
+                    ),
+                    _fmt_count_percent(
+                        summary["attributes"][band],
+                        totals["attributes"],
+                    ),
+                    _fmt_count_percent(
+                        summary["pairs"][band],
+                        totals["pairs"],
+                    ),
+                ],
+            ),
+        )
+    lines.extend(
+        [
+            "",
+            "## Aggregate Statistics",
+            "",
+            "| group | rows | T5 total | lexicon total | lexicon - T5 total diff | "
+            "total difference rate | Pearson r | R^2 | MAE | MAPE |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ],
+    )
+    statistics = result["statistics"]
+    for label, key in [
+        ("Entity", "entities"),
+        ("Attribute", "attributes"),
+        ("Entity-Attribute Pair", "pairs"),
+    ]:
+        stat = statistics[key]
+        lines.append(
+            _table_row(
+                [
+                    label,
+                    _fmt(stat["rows"]),
+                    _fmt(stat["t5_total"]),
+                    _fmt(stat["lexicon_total"]),
+                    _fmt(stat["total_diff"]),
+                    _fmt_percent(stat["total_diff_percent"]),
+                    _fmt_decimal(stat["pearson_r"], places=4),
+                    _fmt_decimal(stat["r_squared"], places=4),
+                    _fmt_decimal(stat["mean_absolute_error"], places=2),
+                    _fmt_unsigned_percent(
+                        stat["mean_absolute_percentage_error"],
+                    ),
                 ],
             ),
         )
@@ -656,6 +767,24 @@ def _fmt_percent(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"{value:+.1f}%"
+
+
+def _fmt_unsigned_percent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.1f}%"
+
+
+def _fmt_decimal(value: float | None, *, places: int) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:,.{places}f}"
+
+
+def _fmt_count_percent(count: int, total: int) -> str:
+    if total <= 0:
+        return f"{_fmt(count)} (N/A)"
+    return f"{_fmt(count)} ({count / total * 100.0:.1f}%)"
 
 
 if __name__ == "__main__":

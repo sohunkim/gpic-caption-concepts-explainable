@@ -227,6 +227,10 @@ class CanaryCanonicalT5ExactRawLexiconTest(unittest.TestCase):
                 },
             },
         )
+        self.assertEqual(result["statistics"]["entities"]["rows"], 1)
+        self.assertIsNone(result["statistics"]["entities"]["pearson_r"])
+        self.assertEqual(result["statistics"]["attributes"]["rows"], 2)
+        self.assertIsNone(result["statistics"]["attributes"]["pearson_r"])
         self.assertFalse(result["generated_variants"])
 
     def test_exact_raw_overlap_selects_whole_canonical_row_without_generated_forms(
@@ -347,6 +351,29 @@ class CanaryCanonicalT5ExactRawLexiconTest(unittest.TestCase):
         self.assertEqual(MODULE._difference_band(-30.0), "30~50%")
         self.assertEqual(MODULE._difference_band(49.999), "30~50%")
         self.assertEqual(MODULE._difference_band(-50.0), "50%+")
+
+    def test_aggregate_statistics_include_correlation_and_error_metrics(self) -> None:
+        rows = [
+            {"t5_caption_count": 1, "lexicon_caption_count": 2},
+            {"t5_caption_count": 2, "lexicon_caption_count": 4},
+            {"t5_caption_count": 3, "lexicon_caption_count": 6},
+        ]
+
+        stats = MODULE._aggregate_statistics(rows)
+
+        self.assertEqual(stats["rows"], 3)
+        self.assertEqual(stats["t5_total"], 6)
+        self.assertEqual(stats["lexicon_total"], 12)
+        self.assertEqual(stats["total_diff"], 6)
+        self.assertEqual(stats["total_diff_percent"], 100.0)
+        self.assertAlmostEqual(stats["pearson_r"], 1.0)
+        self.assertAlmostEqual(stats["r_squared"], 1.0)
+        self.assertEqual(stats["mean_absolute_error"], 2.0)
+        self.assertEqual(stats["mean_absolute_percentage_error"], 100.0)
+
+    def test_summary_count_percent_formatter_uses_group_total(self) -> None:
+        self.assertEqual(MODULE._fmt_count_percent(3, 8), "3 (37.5%)")
+        self.assertEqual(MODULE._fmt_count_percent(0, 0), "0 (N/A)")
 
 
 if __name__ == "__main__":
