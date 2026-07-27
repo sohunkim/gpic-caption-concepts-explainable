@@ -286,6 +286,41 @@ class CanaryCanonicalT5ExactRawLexiconTest(unittest.TestCase):
 
         self.assertEqual(match["caption_count"], 4)
 
+    def test_numeric_quantity_alias_matches_spelled_raw_surface(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            "CREATE TABLE attributes ("
+            "_row_id INTEGER PRIMARY KEY, canonical_attribute TEXT, "
+            "attribute_raw_surfaces TEXT);"
+            "CREATE TABLE attribute_object_pairs ("
+            "_row_id INTEGER PRIMARY KEY, object TEXT, attribute TEXT, "
+            "attribute_raw_surfaces TEXT);"
+            "CREATE TABLE report_caption_index ("
+            "view_name TEXT, row_id INTEGER, caption_id TEXT);"
+            "INSERT INTO attributes VALUES (1, '3', '3');"
+            "INSERT INTO attributes VALUES (2, 'three', 'three');"
+            "INSERT INTO attribute_object_pairs VALUES (3, 'mushroom', 'three', 'three');"
+            "INSERT INTO report_caption_index VALUES ('attributes', 1, 'c1');"
+            "INSERT INTO report_caption_index VALUES ('attributes', 2, 'c2');"
+            "INSERT INTO report_caption_index VALUES ('attributes', 2, 'c3');"
+            "INSERT INTO report_caption_index VALUES ('attribute_object_pairs', 3, 'c3');"
+        )
+        aliases = MODULE._lexicon_aliases_for_display_attribute("3", ("3",))
+
+        attribute_match = MODULE._lexicon_attribute_match(conn, aliases=aliases)
+        pair_match = MODULE._lexicon_pair_match(
+            conn,
+            entity="mushroom",
+            attribute_aliases=aliases,
+        )
+
+        self.assertEqual(aliases, {"3", "three"})
+        self.assertEqual(attribute_match["raw_surfaces"], ["3", "three"])
+        self.assertEqual(attribute_match["canonical_attributes"], ["3", "three"])
+        self.assertEqual(attribute_match["caption_count"], 3)
+        self.assertEqual(pair_match["caption_count"], 1)
+
     def test_multiple_t5_names_cannot_be_summed_without_union_override(self) -> None:
         with self.assertRaises(ValueError):
             MODULE._canonical_attribute_count(

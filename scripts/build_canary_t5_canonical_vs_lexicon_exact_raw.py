@@ -17,6 +17,30 @@ DIFFERENCE_BANDS = (
     "N/A",
 )
 
+NUMERIC_ATTRIBUTE_ALIASES = {
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+    "10": "ten",
+    "11": "eleven",
+    "12": "twelve",
+    "13": "thirteen",
+    "14": "fourteen",
+    "15": "fifteen",
+    "16": "sixteen",
+    "17": "seventeen",
+    "18": "eighteen",
+    "19": "nineteen",
+    "20": "twenty",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -118,6 +142,7 @@ def build_comparison(
         )
     attribute_rows = []
     for surface, names in attribute_names.items():
+        aliases = _lexicon_aliases_for_display_attribute(surface, names)
         t5_count = _canonical_attribute_count(
             surface,
             names,
@@ -126,10 +151,10 @@ def build_comparison(
         )
         lexicon_match = _lexicon_attribute_match(
             conn,
-            aliases={surface, *names},
+            aliases=aliases,
             extra_caption_ids=_legacy_attribute_caption_ids(
                 legacy_quantity,
-                aliases={surface, *names},
+                aliases=aliases,
             ),
         )
         difference_percent = _relative_difference_percent(
@@ -154,6 +179,7 @@ def build_comparison(
         entity = _exact_key(item["entity"])
         surface = _exact_key(item["attribute"])
         names = attribute_names[surface]
+        aliases = _lexicon_aliases_for_display_attribute(surface, names)
         t5_count = _canonical_pair_count(
             entity,
             surface,
@@ -164,11 +190,11 @@ def build_comparison(
         lexicon_match = _lexicon_pair_match(
             conn,
             entity=entity,
-            attribute_aliases={surface, *names},
+            attribute_aliases=aliases,
             extra_caption_ids=_legacy_pair_caption_ids(
                 legacy_quantity,
                 entity=entity,
-                aliases={surface, *names},
+                aliases=aliases,
             ),
         )
         difference_percent = _relative_difference_percent(
@@ -198,6 +224,7 @@ def build_comparison(
             "select_canonical_rows_by_exact_raw_surface_overlap_with_8756_surface_or_canonical_name"
         ),
         "generated_variants": False,
+        "numeric_quantity_aliases": NUMERIC_ATTRIBUTE_ALIASES,
         "legacy_quantity_caption_ids_merged": bool(legacy_quantity),
         "difference_band_summary": {
             "entities": _difference_band_counts(entity_rows),
@@ -305,6 +332,18 @@ def _canonical_pair_count(
             f"{key} -> {names}",
         )
     return int(multi_union_counts[key])
+
+
+def _lexicon_aliases_for_display_attribute(
+    surface: str,
+    names: tuple[str, ...],
+) -> set[str]:
+    aliases = {_exact_key(surface), *(_exact_key(name) for name in names)}
+    aliases.discard("")
+    for value in list(aliases):
+        if value in NUMERIC_ATTRIBUTE_ALIASES:
+            aliases.add(NUMERIC_ATTRIBUTE_ALIASES[value])
+    return aliases
 
 
 def _lexicon_entity_caption_count(conn: sqlite3.Connection, entity: str) -> int:
@@ -467,6 +506,9 @@ def _render_markdown(result: dict[str, Any], args: argparse.Namespace) -> str:
         "overlap the explicit 8756 `{surface, canonical name}` set; then use the "
         "selected rows' distinct caption union.",
         "- No generated morphology, lemma family, separator, or shape variants.",
+        "- Numeric quantity attributes use a transparent digit-to-word alias "
+        "when the 8756 canonical label is a digit, so `2` can match exact "
+        "lexicon rows such as `two`.",
         "- Legacy quantity facts omitted by the old report DB are merged by exact "
         "label and caption-ID union when the optional quantity-ID input is supplied.",
         "",
