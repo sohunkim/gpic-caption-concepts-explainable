@@ -3,16 +3,31 @@
   "action_inventory": "inventory/action_inventory.tsv",
   "artifact_type": "gpic_inventory_bundle",
   "attribute_inventory": "inventory/attribute_inventory.tsv",
+  "component_sources": {
+    "object": {
+      "published_at_utc": "2026-07-27T14:02:39+00:00",
+      "snapshot_label": "object_mwe_review_patch_20260727_v2",
+      "source": "outputs\\object_mwe_review_patch_20260727\\object_inventory_review_patched_v2.tsv",
+      "source_stage3_records": ""
+    }
+  },
+  "last_component_update": {
+    "published_at_utc": "2026-07-27T14:02:39+00:00",
+    "snapshot_label": "object_mwe_review_patch_20260727_v2",
+    "source": "outputs\\object_mwe_review_patch_20260727\\object_inventory_review_patched_v2.tsv",
+    "source_stage3_records": ""
+  },
   "lexicon_dir": "lexicons",
   "object_inventory": "inventory/object_inventory.tsv",
   "path_base": "bundle_dir",
   "preview_mode": false,
-  "published_at_utc": "2026-07-26T13:59:54+00:00",
+  "published_at_utc": "2026-07-27T14:02:39+00:00",
   "published_from_bundle": "outputs\\attribute_mwe_rollout_20260725\\prefix1000000\\staged_bundle_v4_verified\\inventory_bundle.json",
+  "published_from_component": "object",
   "schema_version": 1,
   "snapshot_label": "attribute_mwe_prefix1000000_v4_verified_20260726",
   "source_stage3_records": "/mnt/ddn/prod-runs/snu14ksh/gpic_stage456/inputs/stage3_records.jsonl",
-  "source_workflow_state": "outputs\\attribute_mwe_rollout_20260725\\prefix1000000\\staged_bundle_v4_verified\\inventory_bundle.json",
+  "source_workflow_state": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current\\inventory_bundle.json",
   "stage": "3.5-6",
   "status": "complete"
 }

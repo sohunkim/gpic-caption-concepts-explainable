@@ -115,6 +115,19 @@ def build_comparison(
     if any(not names for names in attribute_names.values()):
         missing = sorted(surface for surface, names in attribute_names.items() if not names)
         raise ValueError(f"8756 attributes are missing explicit canonical names: {missing}")
+    pair_attribute_surfaces = {
+        _exact_key(item["attribute"])
+        for item in display.get("pairs", [])
+        if item.get("attribute")
+    }
+    missing_pair_attributes = sorted(pair_attribute_surfaces - set(attribute_names))
+    if missing_pair_attributes:
+        raise ValueError(
+            "8756 display terms JSON is missing attribute_records for pair "
+            "attributes. Use the exact-surface terms artifact, not the "
+            "display-surface-only artifact. Missing attributes: "
+            f"{missing_pair_attributes}"
+        )
 
     t5_attribute_counts = t5.get("attribute_caption_counts", {})
     t5_pair_counts = t5.get("entity_attribute_pair_caption_counts", {})
