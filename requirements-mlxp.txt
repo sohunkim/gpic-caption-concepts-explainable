@@ -2,6 +2,10 @@
 # Torch is intentionally omitted and verified by scripts/setup_mlxp_runtime.sh.
 spacy==3.8.14
 cupy-cuda12x==13.6.0
+# CuPy 13.x imports cupyx.scipy at import time. The MLXP base image currently
+# exposes SciPy 1.15 through --system-site-packages, which breaks CuPy import,
+# so keep a known-compatible SciPy in the venv itself.
+scipy==1.14.1
 wn==1.1.0
 nltk==3.9.4
 pytest==9.1.1

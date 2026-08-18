@@ -59,6 +59,20 @@ def main() -> None:
     if args.nvidia_smi:
         report["nvidia_smi"] = _check_nvidia_smi()
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    raise SystemExit(_exit_code_from_report(report, args))
+
+
+def _exit_code_from_report(report: dict[str, Any], args: argparse.Namespace) -> int:
+    spacy_report = report.get("spacy")
+    if not isinstance(spacy_report, dict):
+        return 1 if args.require_spacy_gpu or args.spacy_model else 0
+    if args.require_spacy_gpu and spacy_report.get("require_gpu") is not True:
+        return 1
+    if args.spacy_model:
+        model_report = spacy_report.get("model")
+        if not isinstance(model_report, dict) or model_report.get("loaded") is not True:
+            return 1
+    return 0
 
 
 def _check_torch() -> dict[str, Any]:
