@@ -29,6 +29,9 @@ fi
 
 "$env_dir/bin/python" -m pip install --upgrade pip
 "$env_dir/bin/python" -m pip install --requirement "$requirements"
+"$env_dir/bin/python" -m pip install --upgrade --force-reinstall --no-deps \
+    "numpy==1.26.4" \
+    "scipy==1.14.1"
 "$env_dir/bin/python" -m pip check
 "$env_dir/bin/python" - <<PY
 from pathlib import Path

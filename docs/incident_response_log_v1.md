@@ -1669,6 +1669,10 @@ failures could mix true setup problems with probe-only environment differences.
 ## Permanent guard
 
 - `requirements-mlxp.txt` now pins `numpy` alongside `scipy`.
+- `scripts/setup_mlxp_runtime.sh` force-reinstalls `numpy` and `scipy` into
+  the venv because `--system-site-packages` can otherwise make pip treat
+  `/opt/conda` packages as satisfying the requirement without copying them into
+  the venv.
 - `scripts/setup_mlxp_runtime.sh` verifies that both `numpy` and `scipy` import
   from the MLXP venv path after installation.
 - `scripts/run_mlxp_probe_bash.py` now prepends the same runtime
