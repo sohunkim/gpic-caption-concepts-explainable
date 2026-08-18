@@ -1642,3 +1642,42 @@ checked before Windows-to-Linux transfer.
   `556c8e920d8d8600be05b98361cb0caf8b9cf485c7c5f7efeda97a47e33f4365`.
 - Remote extraction and manifest verification remain required before this
   incident is cleared.
+
+# 2026-08-18: MLXP Probe And Runtime Used Different Library Environments
+
+## What happened
+
+The first GPIC 10M lite MLXP setup/probe opened an incident with only a generic
+nonzero exit. A follow-up bounded probe showed two environment problems:
+
+- the probe runner did not prepend the same NVIDIA wheel `LD_LIBRARY_PATH`
+  guard that the formal MLXP runner uses, so spaCy GPU model loading could fail
+  in a probe even when the formal path would have had the CUDA libraries
+  visible
+- the MLXP venv is intentionally created with `--system-site-packages` to reuse
+  the pod's CUDA-enabled PyTorch, but `scipy` could still import `numpy` from
+  `/opt/conda`, producing an import-time recursion failure before the dry-run
+  pipeline could start
+
+## Root cause
+
+The MLXP setup pinned `scipy` but did not pin `numpy` inside the venv or verify
+that both numerical packages were imported from the venv. The diagnostic probe
+path also did not mirror the formal runner's runtime library prologue, so probe
+failures could mix true setup problems with probe-only environment differences.
+
+## Permanent guard
+
+- `requirements-mlxp.txt` now pins `numpy` alongside `scipy`.
+- `scripts/setup_mlxp_runtime.sh` verifies that both `numpy` and `scipy` import
+  from the MLXP venv path after installation.
+- `scripts/run_mlxp_probe_bash.py` now prepends the same runtime
+  `LD_LIBRARY_PATH` guard as `scripts/run_mlxp_bash.py` by default, with
+  `--no-runtime-env` available only for deliberate diagnostics.
+
+## Verification required before clearing
+
+- Local runner tests must pass, including probe runtime prologue coverage.
+- The active MLXP pod must pass `check_runtime_env.py --require-spacy-gpu` and
+  the fixed-lexicon mixed-pipeline dry run after rerunning
+  `scripts/setup_mlxp_runtime.sh`.

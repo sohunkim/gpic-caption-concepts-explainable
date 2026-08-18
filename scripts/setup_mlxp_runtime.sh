@@ -30,6 +30,21 @@ fi
 "$env_dir/bin/python" -m pip install --upgrade pip
 "$env_dir/bin/python" -m pip install --requirement "$requirements"
 "$env_dir/bin/python" -m pip check
+"$env_dir/bin/python" - <<PY
+from pathlib import Path
+import numpy
+import scipy
+
+env = Path("$env_dir").resolve()
+for module in (numpy, scipy):
+    module_path = Path(module.__file__).resolve()
+    if env not in module_path.parents:
+        raise SystemExit(
+            f"{module.__name__} was imported outside the MLXP venv: {module_path}"
+        )
+print(f"numpy={numpy.__version__} path={Path(numpy.__file__).resolve()}")
+print(f"scipy={scipy.__version__} path={Path(scipy.__file__).resolve()}")
+PY
 
 cuda_libs=$(
     "$env_dir/bin/python" - <<'PY'

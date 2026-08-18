@@ -1,5 +1,8 @@
 # MLXP adds the NLP runtime to the pod's existing CUDA-enabled PyTorch base.
 # Torch is intentionally omitted and verified by scripts/setup_mlxp_runtime.sh.
+# The venv is created with --system-site-packages to reuse base PyTorch, so keep
+# NumPy/SciPy inside the venv to avoid importing ABI-mismatched base conda wheels.
+numpy==1.26.4
 spacy==3.8.14
 cupy-cuda12x==13.6.0
 # CuPy 13.x imports cupyx.scipy at import time. The MLXP base image currently

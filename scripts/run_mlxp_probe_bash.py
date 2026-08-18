@@ -19,6 +19,7 @@ from run_mlxp_bash import (  # noqa: E402
     DEFAULT_POD,
     _normalize_bash_newlines,
     _preflight_pod_running,
+    _prepend_mlxp_runtime_env,
     _resolve_target_pod,
     _strip_utf_bom,
 )
@@ -49,6 +50,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--kubectl", default=DEFAULT_KUBECTL)
     parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument(
+        "--no-runtime-env",
+        action="store_true",
+        help="Do not prepend the GPIC MLXP runtime LD_LIBRARY_PATH guard.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -71,6 +77,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
 
     payload = _normalize_bash_newlines(_strip_utf_bom(args.script.read_bytes()))
+    if not args.no_runtime_env:
+        payload = _prepend_mlxp_runtime_env(payload)
     pod_preflight_returncode = _preflight_pod_running(
         kubectl=args.kubectl,
         namespace=args.namespace,

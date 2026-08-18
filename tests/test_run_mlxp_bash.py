@@ -11,12 +11,22 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "run_mlxp_bash.py"
+PROBE_SCRIPT_PATH = ROOT / "scripts" / "run_mlxp_probe_bash.py"
 
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("run_mlxp_bash", SCRIPT_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load run_mlxp_bash.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_probe_module():
+    spec = importlib.util.spec_from_file_location("run_mlxp_probe_bash", PROBE_SCRIPT_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load run_mlxp_probe_bash.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -157,6 +167,32 @@ class RunMlxpBashTests(unittest.TestCase):
         self.assertIn(b"LD_LIBRARY_PATH", payload)
         self.assertIn(b"/root/work/gpic-linux-env/bin/python", payload)
         self.assertTrue(payload.endswith(b"set -eu\necho ok\n"))
+
+    def test_probe_runner_prepends_runtime_env_by_default(self) -> None:
+        module = _load_probe_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "probe_runtime.sh"
+            script.write_text("echo ok\n", encoding="utf-8")
+            with patch.object(module.subprocess, "run") as run_mock:
+                pod_preflight = unittest.mock.Mock()
+                pod_preflight.returncode = 0
+                pod_preflight.stdout = json.dumps(
+                    {"status": {"phase": "Running"}},
+                ).encode("utf-8")
+                pod_preflight.stderr = b""
+                remote = unittest.mock.Mock()
+                remote.returncode = 0
+                run_mock.side_effect = [pod_preflight, remote]
+
+                self.assertEqual(
+                    module.main([str(script), "--pod", "pod1", "--timeout-seconds", "5"]),
+                    0,
+                )
+
+        payload = run_mock.call_args_list[-1].kwargs["input"]
+        self.assertIn(b"LD_LIBRARY_PATH", payload)
+        self.assertTrue(payload.endswith(b"echo ok\n"))
 
 
 if __name__ == "__main__":
