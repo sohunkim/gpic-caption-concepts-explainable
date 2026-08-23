@@ -1,13 +1,20 @@
 {
+  "lexicon_rows": {
+    "action_synonyms": 6593,
+    "attribute_synonyms": 16795,
+    "object_parents": 0,
+    "object_synonyms": 0
+  },
+  "metadata_refreshed_at_utc": "2026-08-23T17:47:53+00:00",
+  "published_at_utc": "2026-07-27T14:02:39+00:00",
   "rows": {
     "action_canonical_inventory": 9260,
     "action_inventory": 9260,
-    "attribute_inventory": 37155,
+    "attribute_inventory": 39890,
     "object_inventory": 118829
   },
-  "snapshot_label": "front1m_gpic_nano_20260715",
-  "source_bundle": "outputs\\front1000000_gpic_nano_20260715\\stage35_after_object_manual\\inventory_bundle.json",
-  "status": "published",
-  "target_bundle": "resources\\gpic_inventory\\current\\inventory_bundle.json",
-  "target_dir": "resources\\gpic_inventory\\current"
+  "snapshot_label": "attribute_mwe_prefix1000000_v4_verified_20260726",
+  "status": "metadata_refreshed",
+  "target_bundle": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current\\inventory_bundle.json",
+  "target_dir": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current"
 }

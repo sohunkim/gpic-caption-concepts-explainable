@@ -9,6 +9,54 @@ from pathlib import Path
 from typing import Any
 
 
+QUOTE_PREFIX_CHARS = ('"', "'", "“", "”", "‘", "’")
+
+
+QUOTE_FREE_LABEL_FIELDS = {
+    "objects": ["canonical_object", "object_raw_surfaces"],
+    "attributes": ["canonical_attribute", "attribute_raw_surfaces"],
+    "actions": ["canonical_action", "action_raw_surfaces"],
+    "relations": [
+        "source_object",
+        "source_object_raw_surfaces",
+        "target_object",
+        "target_object_raw_surfaces",
+    ],
+    "object_cooccurrence": [
+        "source_object",
+        "source_object_raw_surfaces",
+        "target_object",
+        "target_object_raw_surfaces",
+    ],
+    "attribute_object_pairs": [
+        "object",
+        "object_raw_surfaces",
+        "attribute",
+        "attribute_raw_surfaces",
+    ],
+    "patient_action_pairs": [
+        "patient_object",
+        "patient_object_raw_surfaces",
+        "action",
+        "action_raw_surfaces",
+    ],
+    "agent_action_pairs": [
+        "agent_object",
+        "agent_object_raw_surfaces",
+        "action",
+        "action_raw_surfaces",
+    ],
+    "patient_action_agent_triples": [
+        "patient_object",
+        "patient_object_raw_surfaces",
+        "action",
+        "action_raw_surfaces",
+        "agent_object",
+        "agent_object_raw_surfaces",
+    ],
+}
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate structural invariants of an interactive count report DB.",
@@ -19,6 +67,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--check-top-caption-counts", type=int, default=0)
     parser.add_argument("--check-all-caption-counts", action="store_true")
     parser.add_argument("--min-patient-action-agent-triples", type=int, default=0)
+    parser.add_argument(
+        "--forbid-leading-quoted-labels",
+        action="store_true",
+        help=(
+            "Fail if extracted concept label columns still contain rows that "
+            "start with a quote character. Use this for quote-free report builds."
+        ),
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -101,11 +157,25 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "index_count={index_count}".format(**mismatch),
             )
 
+        quote_label_hits: list[dict[str, Any]] = []
+        if args.forbid_leading_quoted_labels:
+            quote_label_hits = _find_leading_quoted_labels(conn)
+            for hit in quote_label_hits[:50]:
+                errors.append(
+                    "{view} row_id={row_id}: leading quoted label remains in "
+                    "{field}={value!r}".format(**hit),
+                )
+            if len(quote_label_hits) > 50:
+                errors.append(
+                    f"{len(quote_label_hits) - 50} additional leading quoted labels",
+                )
+
         result = {
             "report_db": str(args.report_db),
             "view_count": len(views),
             "has_caption_index": has_caption_index,
             "caption_mismatch_count": len(caption_mismatches),
+            "leading_quoted_label_count": len(quote_label_hits),
             "errors": errors,
         }
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
@@ -205,6 +275,40 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _find_leading_quoted_labels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    for table, fields in QUOTE_FREE_LABEL_FIELDS.items():
+        if not _table_exists(conn, table):
+            continue
+        existing_fields = _table_columns(conn, table)
+        selected_fields = [field for field in fields if field in existing_fields]
+        if not selected_fields:
+            continue
+        select_list = ", ".join(["_row_id", *(quote_identifier(f) for f in selected_fields)])
+        for row in conn.execute(f"SELECT {select_list} FROM {_q(table)}"):
+            row_id = int(row[0])
+            for index, field in enumerate(selected_fields, start=1):
+                value = row[index]
+                if isinstance(value, str) and value.startswith(QUOTE_PREFIX_CHARS):
+                    hits.append(
+                        {
+                            "view": table,
+                            "row_id": row_id,
+                            "field": field,
+                            "value": value,
+                        },
+                    )
+    return hits
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({_q(table)})")}
+
+
+def quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _q(identifier: str) -> str:

@@ -93,7 +93,24 @@ class PublishCurrentInventoryComponentTest(unittest.TestCase):
         self.assertEqual(bundle["attribute_inventory"], "inventory/attribute_inventory.tsv")
         self.assertEqual(bundle["action_inventory"], "inventory/action_inventory.tsv")
         self.assertEqual(bundle["component_sources"]["object"]["snapshot_label"], "front1m_object")
+        self.assertEqual(bundle["inventory_rows"]["object_inventory"], 1)
+        self.assertEqual(bundle["inventory_rows"]["attribute_inventory"], 1)
+        self.assertTrue((current / "publish_summary.json").is_file())
         self.assertEqual(_read_tsv(old_object)[0]["span_key"], "car")
+
+    def test_non_object_component_requires_complete_bundle_publish(self) -> None:
+        source = self.tmp / "attribute.tsv"
+        _write_tsv(source, [{"span_key": "blue", "decision_status": "chosen"}])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "component_requires_synchronized_lexicon_publish",
+        ):
+            publish_component.publish_current_inventory_component(
+                component="attribute",
+                source=source,
+                target_dir=self.tmp / "current",
+            )
 
 
 def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:

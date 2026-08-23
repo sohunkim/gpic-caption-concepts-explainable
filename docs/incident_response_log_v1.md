@@ -1685,3 +1685,64 @@ failures could mix true setup problems with probe-only environment differences.
 - The active MLXP pod must pass `check_runtime_env.py --require-spacy-gpu` and
   the fixed-lexicon mixed-pipeline dry run after rerunning
   `scripts/setup_mlxp_runtime.sh`.
+
+# 2026-08-24: Current Inventory Publication Could Drift Across Components
+
+## What was wrong
+
+- A component publish could replace attribute or action inventory without
+  replacing the matching Stage 5 lexicon tree.
+- Component publication updated only the changed component count, leaving the
+  canonical summary and total inventory row metadata stale.
+- The copied Stage 5 lexicon state retained source-machine absolute paths.
+- A stale component-specific publish summary remained beside the canonical
+  summary and could be mistaken for current state.
+
+## Permanent guard
+
+- Attribute and action publication now requires a complete synchronized bundle
+  through `publish_inventory_bundle.py`; independent component publication is
+  limited to object inventory in both the CLI and function boundary.
+- Both publish entrypoints run through the incident gate.
+- Full publication validates the source Stage 5 lexicon state, copies the
+  complete lexicon tree, and rewrites its inventory references relative to the
+  published lexicon directory.
+- Both publish paths recalculate every inventory and lexicon row count and write
+  only `resources/gpic_inventory/current/publish_summary.json` as the canonical
+  summary.
+- Full publication rejects an in-place source/target pair before mutation;
+  metadata-only repair must use `refresh_current_inventory_metadata.py`.
+- `refresh_current_inventory_metadata.py` repairs metadata without replacing
+  TSV content and is itself incident-gated.
+
+## Verification
+
+- Publish and metadata-refresh regression tests passed as part of the 17-test
+  targeted group recorded in `docs/test_records_v1.md`.
+- Current TSV counts, bundle metadata, and publish-summary metadata matched
+  exactly; the formal bundle loader and Stage 5 gate passed.
+
+# 2026-08-24: Test Collection And Wrapper State Leaked Across Runs
+
+## What was wrong
+
+- Pytest could recurse into generated or copied test files under `outputs/`, so
+  collection depended on local artifacts rather than the repository test set.
+- `scripts/run_tests.ps1` changed process-level temp and bytecode environment
+  variables but did not restore them. A second invocation in the same
+  PowerShell process could inherit the first run's deleted or inaccessible temp
+  directory and fail for reasons unrelated to the code.
+
+## Permanent guard
+
+- Root `pytest.ini` restricts collection to `tests/test_*.py` and excludes
+  generated/output/runtime directories.
+- `scripts/run_tests.ps1` saves all environment variables it changes and
+  restores them in `finally`, regardless of test success or failure.
+- `tests/test_run_tests_wrapper.py` invokes the wrapper twice in one PowerShell
+  process and verifies environment restoration.
+
+## Verification
+
+- Wrapper re-entry passed in the targeted group.
+- Full repository result: `433 passed, 1 warning, 26 subtests passed`.

@@ -56,7 +56,10 @@ class RunMlxpProbeBashTest(unittest.TestCase):
         script.write_bytes(b"echo ok\r\n")
         completed = Mock(returncode=0)
 
-        with patch.object(probe.subprocess, "run", return_value=completed) as run:
+        with (
+            patch.object(probe, "_preflight_pod_running", return_value=0) as preflight,
+            patch.object(probe.subprocess, "run", return_value=completed) as run,
+        ):
             result = probe.main(
                 [
                     str(script),
@@ -72,6 +75,11 @@ class RunMlxpProbeBashTest(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        preflight.assert_called_once_with(
+            kubectl="/bin/kubectl",
+            namespace="ns-a",
+            pod="pod-a",
+        )
         command = run.call_args.args[0]
         self.assertEqual(
             command,
@@ -89,19 +97,26 @@ class RunMlxpProbeBashTest(unittest.TestCase):
                 "-s",
             ],
         )
-        self.assertEqual(run.call_args.kwargs["input"], b"echo ok\n")
+        payload = run.call_args.kwargs["input"]
+        self.assertIn(b"GPIC MLXP runtime guard", payload)
+        self.assertTrue(payload.endswith(b"echo ok\n"))
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
 
     def test_timeout_returns_124(self) -> None:
         script = self.tmp / "probe_status.sh"
         script.write_text("sleep 10\n", encoding="utf-8")
 
-        with patch.object(
-            probe.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(["wsl"], timeout=1),
+        with (
+            patch.object(probe, "_preflight_pod_running", return_value=0),
+            patch.object(
+                probe.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["wsl"], timeout=1),
+            ),
         ):
-            result = probe.main([str(script), "--timeout-seconds", "1"])
+            result = probe.main(
+                [str(script), "--pod", "pod-a", "--timeout-seconds", "1"]
+            )
 
         self.assertEqual(result, 124)
 

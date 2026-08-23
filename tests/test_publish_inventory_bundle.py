@@ -65,7 +65,11 @@ class PublishInventoryBundleTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        (lexicons / "pipeline_state.json").write_text('{"status":"ok"}\n', encoding="utf-8")
+        _write_lexicon_state(
+            lexicons,
+            attribute_inventory=attribute_inventory,
+            action_canonical_inventory=action_canonical_inventory,
+        )
         (lexicons / "attribute_synonyms.tsv").write_text(
             "source_label\tcanonical_label\nblack\tblack\n",
             encoding="utf-8",
@@ -103,14 +107,59 @@ class PublishInventoryBundleTest(unittest.TestCase):
         self.assertEqual(data["attribute_inventory"], "inventory/attribute_inventory.tsv")
         self.assertEqual(data["action_inventory"], "inventory/action_inventory.tsv")
         self.assertEqual(data["lexicon_dir"], "lexicons")
+        self.assertEqual(data["inventory_rows"]["attribute_inventory"], 1)
         self.assertNotIn(str(source), data["object_inventory"])
         self.assertTrue((target / "lexicons" / "attribute_synonyms.tsv").exists())
+        self.assertTrue((target / "publish_summary.json").is_file())
+        lexicon_state = json.loads(
+            (target / "lexicons" / "pipeline_state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            lexicon_state["attribute_inventory"],
+            "../inventory/attribute_inventory.tsv",
+        )
+        self.assertEqual(lexicon_state["path_base"], "lexicon_dir")
+        self.assertEqual(lexicon_state["output_dir"], ".")
         action_state = json.loads(
             (target / "inventory" / "action_inventory.tsv.pipeline_state.json").read_text(
                 encoding="utf-8"
             )
         )
         self.assertEqual(action_state["output"], str(target / "inventory" / "action_inventory.tsv"))
+
+    def test_publish_rejects_current_bundle_as_its_own_source(self) -> None:
+        target = self.tmp / "resources" / "gpic_inventory" / "current"
+        inventory = target / "inventory"
+        lexicons = target / "lexicons"
+        inventory.mkdir(parents=True)
+        lexicons.mkdir()
+        object_inventory = inventory / "object_inventory.tsv"
+        attribute_inventory = inventory / "attribute_inventory.tsv"
+        action_inventory = inventory / "action_inventory.tsv"
+        _write_tsv(object_inventory, [{"span_key": "dog"}])
+        _write_tsv(attribute_inventory, [{"span_key": "black"}])
+        _write_tsv(action_inventory, [{"span_key": "run"}])
+        bundle = target / "inventory_bundle.json"
+        bundle.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "gpic_inventory_bundle",
+                    "status": "complete",
+                    "path_base": "bundle_dir",
+                    "object_inventory": "inventory/object_inventory.tsv",
+                    "attribute_inventory": "inventory/attribute_inventory.tsv",
+                    "action_inventory": "inventory/action_inventory.tsv",
+                    "lexicon_dir": "lexicons",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "refuse_in_place_bundle_publish"):
+            publish.publish_inventory_bundle(source_bundle=bundle, target_dir=target)
+
+        self.assertTrue(bundle.is_file())
+        self.assertTrue(lexicons.is_dir())
 
     def test_publish_replaces_stale_lexicon_tree(self) -> None:
         source = self.tmp / "source"
@@ -122,9 +171,11 @@ class PublishInventoryBundleTest(unittest.TestCase):
         object_inventory = source / "object.tsv"
         attribute_inventory = source / "attribute.tsv"
         action_inventory = source / "action.tsv"
+        action_canonical_inventory = source / "action_canonical.tsv"
         _write_tsv(object_inventory, [{"span_key": "dog"}])
         _write_tsv(attribute_inventory, [{"span_key": "black"}])
         _write_tsv(action_inventory, [{"span_key": "run"}])
+        _write_tsv(action_canonical_inventory, [{"span_key": "run"}])
         (source / "action.tsv.pipeline_state.json").write_text(
             json.dumps(
                 {
@@ -138,7 +189,11 @@ class PublishInventoryBundleTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        (lexicons / "pipeline_state.json").write_text("{}\n", encoding="utf-8")
+        _write_lexicon_state(
+            lexicons,
+            attribute_inventory=attribute_inventory,
+            action_canonical_inventory=action_canonical_inventory,
+        )
         bundle = source / "inventory_bundle.json"
         bundle.write_text(
             json.dumps(
@@ -148,6 +203,7 @@ class PublishInventoryBundleTest(unittest.TestCase):
                     "object_inventory": str(object_inventory),
                     "attribute_inventory": str(attribute_inventory),
                     "action_inventory": str(action_inventory),
+                    "action_canonical_inventory": str(action_canonical_inventory),
                     "lexicon_dir": str(lexicons),
                 }
             ),
@@ -221,6 +277,31 @@ def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_lexicon_state(
+    lexicon_dir: Path,
+    *,
+    attribute_inventory: Path,
+    action_canonical_inventory: Path,
+) -> None:
+    (lexicon_dir / "pipeline_state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_type": "stage5_lexicon_bundle",
+                "stage": "5",
+                "status": "ready",
+                "preview_mode": False,
+                "attribute_inventory": str(attribute_inventory),
+                "action_canonical_inventory": str(action_canonical_inventory),
+                "output_dir": str(lexicon_dir),
+                "action_canonical_exported": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

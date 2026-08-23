@@ -11,6 +11,12 @@
       "source_stage3_records": ""
     }
   },
+  "inventory_rows": {
+    "action_canonical_inventory": 9260,
+    "action_inventory": 9260,
+    "attribute_inventory": 39890,
+    "object_inventory": 118829
+  },
   "last_component_update": {
     "published_at_utc": "2026-07-27T14:02:39+00:00",
     "snapshot_label": "object_mwe_review_patch_20260727_v2",
@@ -18,6 +24,7 @@
     "source_stage3_records": ""
   },
   "lexicon_dir": "lexicons",
+  "metadata_refreshed_at_utc": "2026-08-23T17:47:53+00:00",
   "object_inventory": "inventory/object_inventory.tsv",
   "path_base": "bundle_dir",
   "preview_mode": false,
@@ -27,7 +34,7 @@
   "schema_version": 1,
   "snapshot_label": "attribute_mwe_prefix1000000_v4_verified_20260726",
   "source_stage3_records": "/mnt/ddn/prod-runs/snu14ksh/gpic_stage456/inputs/stage3_records.jsonl",
-  "source_workflow_state": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current\\inventory_bundle.json",
+  "source_workflow_state": "outputs\\attribute_mwe_rollout_20260725\\prefix1000000\\staged_bundle_v4_verified\\inventory_bundle.json",
   "stage": "3.5-6",
   "status": "complete"
 }

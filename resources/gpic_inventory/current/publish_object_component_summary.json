@@ -1,9 +1,0 @@
-{
-  "component": "object",
-  "rows": 118829,
-  "snapshot_label": "front1m_gpic_nano_20260715_object",
-  "source": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\outputs\\front1000000_gpic_nano_20260715\\object_inventory\\gpic_observed_object_inventory_manual_resolved_parent_canonical_metadata.tsv",
-  "status": "published_component",
-  "target": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current\\inventory\\object_inventory.tsv",
-  "target_bundle": "C:\\Users\\rlath\\Documents\\Codex\\gpic-caption-concepts-explainable\\resources\\gpic_inventory\\current\\inventory_bundle.json"
-}

@@ -5286,3 +5286,35 @@ Object inventory prior-bundle guard, 2026-07-13:
   - unified/legacy quantity row normalization;
   - sharded streaming verification.
 - Targeted result after the fixes: `70 passed`.
+
+## 2026-08-24: Current Inventory And Report Tooling Hardening
+
+- Scope:
+  - synchronized inventory/Stage 5 lexicon publication and portable provenance;
+  - current-bundle row-count metadata refresh;
+  - object-only component publish boundary;
+  - pytest collection limited to `tests/`;
+  - re-entrant PowerShell test-wrapper environment restoration;
+  - quote-free interactive-report construction and quoted-label validation;
+  - MLXP probe preflight and runtime-environment parity.
+- Targeted command:
+  `.\scripts\run_tests.ps1 --pytest --timeout-seconds 240 tests/test_publish_current_inventory_component.py tests/test_publish_inventory_bundle.py tests/test_refresh_current_inventory_metadata.py tests/test_build_quote_free_interactive_report.py tests/test_validate_interactive_report_db.py tests/test_run_mlxp_probe_bash.py tests/test_run_tests_wrapper.py`
+- Targeted result: `17 passed`.
+- Full command:
+  `.\scripts\run_tests.ps1 --pytest -q --timeout-seconds 240`
+- Additional publish-boundary command:
+  `.\scripts\run_tests.ps1 --pytest tests/test_publish_inventory_bundle.py tests/test_publish_current_inventory_component.py tests/test_refresh_current_inventory_metadata.py --timeout-seconds 120`
+- Additional publish-boundary result: `8 passed`.
+- Final full result: `433 passed, 1 warning, 26 subtests passed in 81.65s`.
+- Current-bundle verification:
+  - formal bundle loader and Stage 5 lexicon state gate passed;
+  - actual inventory rows equal both `inventory_bundle.json.inventory_rows`
+    and `publish_summary.json.rows`;
+  - rows: object `118829`, attribute `39890`, action `9260`, action canonical
+    `9260`;
+  - lexicon rows: action synonyms `6593`, attribute synonyms `16795`, object
+    parents `0`, object synonyms `0`;
+  - current lexicon provenance uses `path_base=lexicon_dir` and relative
+    inventory paths;
+  - no open `.pipeline_state/incident.json` or legacy
+    `outputs/_incident_required.json` was present.

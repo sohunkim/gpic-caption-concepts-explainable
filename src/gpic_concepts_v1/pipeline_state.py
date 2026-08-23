@@ -28,7 +28,7 @@ def output_dir_state_path(output_dir: str | Path) -> Path:
 
 def write_pipeline_state(path: str | Path, state: Mapping[str, Any]) -> None:
     payload = {"schema_version": PIPELINE_STATE_SCHEMA_VERSION, **dict(state)}
-    with atomic_text_writer(Path(path)) as handle:
+    with atomic_text_writer(Path(path), newline="\n") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         handle.write("\n")
 

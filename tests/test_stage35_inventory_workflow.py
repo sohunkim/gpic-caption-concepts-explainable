@@ -536,6 +536,22 @@ class Stage35InventoryWorkflowTest(unittest.TestCase):
             "source_label\tcanonical_label\nrun\trun\n",
             encoding="utf-8",
         )
+        (paths.lexicon_output_dir / "pipeline_state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact_type": "stage5_lexicon_bundle",
+                    "stage": "5",
+                    "status": "ready",
+                    "preview_mode": False,
+                    "attribute_inventory": str(paths.attribute_canonical_inventory),
+                    "action_canonical_inventory": str(paths.action_canonical_inventory),
+                    "output_dir": str(paths.lexicon_output_dir),
+                    "action_canonical_exported": True,
+                }
+            ),
+            encoding="utf-8",
+        )
         decision = workflow.WorkflowDecision(
             action="complete",
             status="complete",

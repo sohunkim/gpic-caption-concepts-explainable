@@ -62,12 +62,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     if args.timeout_seconds < 1:
         raise SystemExit("--timeout-seconds must be greater than zero")
-    pod = _resolve_target_pod(
-        explicit_pod=args.pod or os.environ.get(DEFAULT_POD_ENV),
-        pod_prefix=args.pod_prefix or os.environ.get(DEFAULT_POD_PREFIX_ENV),
-        namespace=args.namespace,
-        kubectl=args.kubectl,
-    )
     if not args.script.exists():
         raise SystemExit(f"missing script: {args.script}")
     if not args.script.name.startswith("probe_"):
@@ -75,6 +69,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             "run_mlxp_probe_bash.py only accepts probe_*.sh scripts; "
             "use run_mlxp_bash.py for formal remote work."
         )
+    pod = _resolve_target_pod(
+        explicit_pod=args.pod or os.environ.get(DEFAULT_POD_ENV),
+        pod_prefix=args.pod_prefix or os.environ.get(DEFAULT_POD_PREFIX_ENV),
+        namespace=args.namespace,
+        kubectl=args.kubectl,
+    )
 
     payload = _normalize_bash_newlines(_strip_utf_bom(args.script.read_bytes()))
     if not args.no_runtime_env:

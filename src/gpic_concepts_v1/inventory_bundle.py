@@ -75,7 +75,7 @@ def build_inventory_bundle_state(
 
 
 def write_inventory_bundle(path: str | Path, state: Mapping[str, Any]) -> None:
-    with atomic_text_writer(Path(path)) as handle:
+    with atomic_text_writer(Path(path), newline="\n") as handle:
         handle.write(json.dumps(dict(state), ensure_ascii=False, indent=2, sort_keys=True))
         handle.write("\n")
 

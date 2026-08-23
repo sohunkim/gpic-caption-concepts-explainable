@@ -17,7 +17,7 @@ v1의 기준은 다음 한 문장이다.
 | 입력 | caption text만 사용 | image를 보지 않음 | caption에 없는 정보는 절대 복구하지 않는다. |
 | parsing | spaCy parse evidence 사용 | spaCy parser 오류가 그대로 전파될 수 있음 | 잘못 붙은 dependency는 잘못된 tuple로 이어질 수 있다. |
 | rule | 문서화된 rule만 사용 | 많은 edge case를 일부러 복구하지 않음 | 누락이 있을 수 있지만, 왜 누락됐는지는 설명 가능해야 한다. |
-| canonicalization | 명시 lexicon lookup 중심 | unknown concept은 raw lemma로 남음 | parent가 비거나 canonical이 raw와 같을 수 있다. |
+| canonicalization | resolved inventory와 명시 lexicon lookup 중심 | no-synset concept은 raw fallback으로 남음 | parent가 비거나 canonical이 raw와 같을 수 있다. |
 | count export | 새 해석 없이 집계만 수행 | export 단계에서 누락 복구 없음 | count table은 extraction 결과의 집계이지 추가 parser가 아니다. |
 
 ## 2. 입력 형태 한계
@@ -69,15 +69,16 @@ quote span은 placeholder로 바꾸지 않고 원문 quote span을 하나의 tok
 - `"1709-1"`이 number인지 text인지 구분하지 않는다.
 - quote가 어떤 object에 붙는지는 Stage 4 evidence에만 의존한다.
 
-### 3.2 Object MWE merge
+### 3.2 Object MWE는 Stage 2에서 merge하지 않음
 
-명시 object MWE lexicon에 있는 span만 merge한다.
+Stage 2는 object MWE를 retokenize하지 않는다. Object span은 Stage 4에서
+resolved object inventory의 selected span을 noun chunk에 적용해 결정한다.
 
 한계:
 
-- lexicon에 없는 `trash can`, `music stand`, `hot-air balloon` 같은 표현은 merge되지 않을 수 있다.
-- MWE lexicon은 GPIC error를 보고 몰래 확장하지 않는다.
-- MWE merge는 object MWE에만 쓰며, relation MWE와 phrasal action collapse는 v1에서 하지 않는다.
+- inventory에 관측·해결되지 않은 새 span은 기존 single-token/core fallback으로 남을 수 있다.
+- selected span은 token metadata로 관리되므로 spaCy 자체 tokenization이나 POS를 고치지 않는다.
+- quote-protected 단일 token 안의 공백은 object MWE token 수로 해석하지 않는다.
 
 ### 3.3 Hyphen word merge
 
@@ -109,14 +110,11 @@ spaCy tagger와 parser는 learned model이다.
 
 v1은 이런 오류를 대부분 복구하지 않는다.
 
-### 4.2 Object MWE POS correction만 예외
+### 4.2 Object MWE POS correction 없음
 
-Stage 2에서 object MWE로 merge된 token은 POS=`NOUN`, TAG=`NN`으로 보정할 수 있다.
-
-한계:
-
-- 이 보정은 object MWE merge가 이미 성공한 span에만 적용된다.
-- 일반 POS 오류를 전부 고치는 기능이 아니다.
+Stage 2 object MWE retokenization이 비활성화되어 있으므로 object MWE 전용
+POS/TAG correction도 적용하지 않는다. Stage 4 inventory span selection은
+Stage 3의 원래 token/POS/dependency evidence를 보존한다.
 
 ## 5. Stage 4 한계: raw concept extraction
 
@@ -124,12 +122,12 @@ Stage 4는 raw mention과 raw edge를 만든다.
 
 v1의 원칙은 단순하다.
 
-- noun chunk root -> object
-- noun chunk modifier -> attribute 또는 quantity
-- VERB -> action
-- nsubj -> agent
-- obj/dobj -> patient
-- ADP plus direct pobj -> relation
+- noun chunk 내부 resolved inventory selected span -> object
+- selected object core 밖 modifier 또는 resolved attribute MWE -> attribute
+- `nummod`/`NUM` -> quantity
+- resolved single VERB 또는 phrasal action span -> action
+- documented direct/passive/conj/ACL evidence -> event role
+- single ADP 또는 reviewed preposition MWE + object evidence -> relation
 
 ### 5.1 Object 누락 가능
 
@@ -138,8 +136,8 @@ v1의 원칙은 단순하다.
 - spaCy noun chunk가 잡지 못한 object
 - parser가 verb/adjective로 잘못 본 object
 - 생략 구조 안의 object
-- tag-list caption 안의 object
-- pronoun으로만 언급된 object
+- tag-list segment에서 noun chunk로 분석되지 않는 object
+- pronoun이 가리키는 실제 antecedent object
 
 v1은 with-absolute recovery나 scene fallback object recovery를 하지 않는다.
 
@@ -150,20 +148,22 @@ v1은 with-absolute recovery나 scene fallback object recovery를 하지 않는�
 - noun chunk 밖에 떠 있는 attribute
 - parser가 잘못 붙인 modifier
 - 문장 전체에 걸친 style/medium 표현
-- quote 안에 들어간 attribute
-- tag-list segment attribute
+- predicative `acomp` attribute
+- resolved inventory에 없는 새로운 attribute MWE
+- quote 안에서 concept이 아닌 text로 보호된 attribute-like 문자열
 
 ### 5.3 Action role 누락 가능
 
 다음 action role은 누락될 수 있다.
 
 - subject가 pronoun인 경우
-- passive voice에서 semantic agent/theme이 필요한 경우
-- conjoined verb가 agent를 생략한 경우
-- non-finite verb의 implied subject가 필요한 경우
+- `relcl` relative pronoun을 antecedent noun으로 치환해야 하는 경우
+- conjoined verb가 patient를 생략한 경우
+- R16.3 범위 밖 non-finite verb의 implied subject가 필요한 경우
 - gapping construction
 
-v1은 inherited agent repair를 하지 않는다.
+v1은 direct role, passive subject/by-agent, action-conj agent inheritance,
+VBG `acl` head-object agent만 처리한다. Broad patient/subject inheritance는 하지 않는다.
 
 ### 5.4 Relation 한계
 
@@ -257,22 +257,21 @@ Stage 5는 raw extraction 결과를 단순화한다.
 
 ### 8.1 Synonym 한계
 
-명시 lexicon에 있는 경우만 canonicalize한다.
-
-예:
-
-- `cab` -> `taxi`는 lexicon에 있으면 가능
-- lexicon에 없으면 `cab` 그대로 남음
+Object는 resolved object inventory의 canonical surface를 사용한다. Attribute와
+action은 resolved inventory에서 export된 Stage 5 synonym lexicon을 사용한다.
+선택 synset이 없는 countable row는 raw fallback으로 남는다.
 
 ### 8.2 Parent concept 한계
 
-parent concept도 명시 lexicon 기반이다.
+Object parent는 selected OEWN synset의 immediate hypernym evidence를 Stage 4
+source detail에서 가져온다. Attribute parent는 현재 별도 taxonomy를 자동으로
+만들지 않고 비워 둔다.
 
 한계:
 
 - parent가 비는 concept이 있을 수 있다.
-- parent chain은 자동 ontology traversal이 아니다.
-- WordNet/OEWN/Visual Genome 등 외부 resource를 쓰더라도 v1에서는 frozen TSV로 들어온 항목만 사용한다.
+- object parent는 1차 hypernym까지만 보존하며 전체 ancestor chain이 아니다.
+- no-synset object와 attribute/action에는 OEWN parent가 없다.
 
 ### 8.3 Relation은 raw-preserving
 
@@ -325,9 +324,10 @@ Stage 6은 count를 만든다.
 
 | 후보 | 왜 v1에서 제외했는가 |
 |---|---|
-| tag-list extraction | tag-list 전용 구조 설계 필요 |
-| relation MWE | `in front of`, `on top of` 등은 유용하지만 region 표현과 충돌 가능 |
-| phrasal action | action canonicalization과 relation 분리를 먼저 정해야 함 |
+| tag-list action/relation extraction | 현재 tag-list는 object/attribute/quantity만 처리하며 event endpoint를 안정적으로 설명하기 어려움 |
+| predicative attribute | `acomp`를 object에 연결하려면 copular/subject 해석 rule이 필요 |
+| relation source disambiguation | action-attached PP의 복수 source/target 후보를 의미적으로 고르는 rule이 필요 |
+| action patient inheritance | conjunct action patient 상속은 false positive 위험과 검증이 필요 |
 | broader passive normalization | non-`by` causer, coreference, passive action collapse 등은 별도 semantic rewrite가 필요 |
 | pronoun/coreference | scoring rule과 error analysis 필요 |
 | generic anaphora | `the object`, `the device` 같은 generic noun list와 antecedent scoring 필요 |

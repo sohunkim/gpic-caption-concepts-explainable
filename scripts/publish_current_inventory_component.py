@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -14,16 +13,25 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).absolute().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+SCRIPTS = ROOT / "scripts"
+for path in (SRC, SCRIPTS):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from gpic_concepts_v1.atomic_io import atomic_text_writer
+from incident_gate import guarded_entrypoint
+
 from gpic_concepts_v1.inventory_bundle import (
     build_inventory_bundle_state,
     load_inventory_bundle,
     write_inventory_bundle,
 )
 from gpic_concepts_v1.inventory_validation import final_manual_resolution_blockers
+from gpic_concepts_v1.inventory_publish import (
+    inventory_row_counts,
+    lexicon_row_counts,
+    now_utc,
+    write_json_atomic,
+)
 
 
 DEFAULT_TARGET_DIR = ROOT / "resources" / "gpic_inventory" / "current"
@@ -37,13 +45,16 @@ COMPONENT_TARGET_NAMES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Publish one completed inventory component into resources/gpic_inventory/current.",
+        description=(
+            "Publish a completed object inventory into resources/gpic_inventory/current. "
+            "Attribute and action changes require a synchronized full-bundle publish."
+        ),
     )
     parser.add_argument(
         "--component",
         required=True,
-        choices=sorted(COMPONENT_TARGET_NAMES),
-        help="Current inventory component to update.",
+        choices=("object",),
+        help="Current inventory component to update; only object is independently publishable.",
     )
     parser.add_argument("--source", required=True, help="Resolved/canonical component TSV to publish.")
     parser.add_argument("--target-dir", default=str(DEFAULT_TARGET_DIR))
@@ -77,6 +88,12 @@ def publish_current_inventory_component(
 ) -> dict[str, Any]:
     if component not in COMPONENT_TARGET_NAMES:
         raise ValueError(f"unsupported_component: {component}")
+    if component != "object":
+        raise ValueError(
+            "component_requires_synchronized_lexicon_publish: "
+            f"{component}; publish a complete inventory bundle with its matching "
+            "Stage 5 lexicon directory via publish_inventory_bundle.py"
+        )
     if not source.is_file():
         raise FileNotFoundError(f"missing_component_source: {source}")
 
@@ -94,14 +111,7 @@ def publish_current_inventory_component(
     action_inventory = bundle.action_inventory
     action_canonical_inventory = bundle.action_canonical_inventory
 
-    if component == "object":
-        object_inventory = target_path
-    elif component == "attribute":
-        attribute_inventory = target_path
-    elif component == "action":
-        action_inventory = target_path
-    elif component == "action_canonical":
-        action_canonical_inventory = target_path
+    object_inventory = target_path
 
     state = build_inventory_bundle_state(
         object_inventory=object_inventory,
@@ -114,16 +124,17 @@ def publish_current_inventory_component(
     )
     previous_state = _read_json_object(central_bundle)
     state.update(_preserved_bundle_metadata(previous_state))
+    published_at_utc = now_utc()
     component_sources = dict(previous_state.get("component_sources", {}))
     component_sources[component] = {
-        "published_at_utc": _now_utc(),
+        "published_at_utc": published_at_utc,
         "snapshot_label": snapshot_label,
         "source": str(source),
         "source_stage3_records": source_stage3_records,
     }
     state.update(
         {
-            "published_at_utc": _now_utc(),
+            "published_at_utc": published_at_utc,
             "published_from_component": component,
             "snapshot_label": previous_state.get("snapshot_label", "component_current_mixed"),
             "source_stage3_records": previous_state.get("source_stage3_records", ""),
@@ -131,6 +142,13 @@ def publish_current_inventory_component(
             "component_sources": component_sources,
         }
     )
+    rows = inventory_row_counts(
+        object_inventory=object_inventory,
+        attribute_inventory=attribute_inventory,
+        action_inventory=action_inventory,
+        action_canonical_inventory=action_canonical_inventory,
+    )
+    state["inventory_rows"] = rows
     write_inventory_bundle(central_bundle, state)
 
     summary = {
@@ -140,12 +158,14 @@ def publish_current_inventory_component(
         "target": str(target_path),
         "target_bundle": str(central_bundle),
         "snapshot_label": snapshot_label,
-        "rows": _count_tsv_rows(target_path),
+        "component_rows": rows["object_inventory"],
+        "rows": rows,
+        "lexicon_rows": lexicon_row_counts(bundle.lexicon_dir),
     }
-    if summary_path is not None:
-        with atomic_text_writer(summary_path) as handle:
-            handle.write(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
-            handle.write("\n")
+    canonical_summary_path = target_dir / "publish_summary.json"
+    write_json_atomic(canonical_summary_path, summary)
+    if summary_path is not None and summary_path.absolute() != canonical_summary_path.absolute():
+        write_json_atomic(summary_path, summary)
     return summary
 
 
@@ -173,6 +193,7 @@ def _preserved_bundle_metadata(previous_state: Mapping[str, Any]) -> dict[str, A
         "stage",
         "status",
         "published_from_bundle",
+        "source_workflow_state",
     ):
         if key in previous_state:
             preserved[key] = previous_state[key]
@@ -199,16 +220,6 @@ def _read_tsv(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in reader]
 
 
-def _count_tsv_rows(path: Path) -> int:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        try:
-            next(reader)
-        except StopIteration:
-            return 0
-        return sum(1 for _ in reader)
-
-
 def _read_json_object(path: Path) -> Mapping[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, Mapping):
@@ -216,9 +227,5 @@ def _read_json_object(path: Path) -> Mapping[str, Any]:
     return data
 
 
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
 if __name__ == "__main__":
-    main()
+    raise SystemExit(guarded_entrypoint("publish_current_inventory_component", main))

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from datetime import datetime, timezone
 import json
 import os
@@ -26,7 +25,14 @@ from gpic_concepts_v1.inventory_bundle import (
     load_inventory_bundle,
     write_inventory_bundle,
 )
+from gpic_concepts_v1.inventory_publish import (
+    inventory_row_counts,
+    lexicon_row_counts,
+    repoint_stage5_lexicon_state,
+    write_json_atomic,
+)
 from gpic_concepts_v1.pipeline_state import artifact_state_path
+from gpic_concepts_v1.pipeline_state import require_stage5_lexicon_bundle_state
 
 
 DEFAULT_TARGET_DIR = ROOT / "resources" / "gpic_inventory" / "current"
@@ -68,6 +74,17 @@ def publish_inventory_bundle(
     summary_path: Path | None = None,
 ) -> dict[str, Any]:
     bundle = load_inventory_bundle(source_bundle)
+    target_bundle = target_dir / "inventory_bundle.json"
+    target_lexicon_dir = target_dir / "lexicons"
+    if _same_path(source_bundle, target_bundle) or _same_path(
+        bundle.lexicon_dir,
+        target_lexicon_dir,
+    ):
+        raise ValueError(
+            "refuse_in_place_bundle_publish: source and target resolve to the "
+            "same current bundle; use refresh_current_inventory_metadata.py "
+            "for metadata-only repair"
+        )
     _require_file(bundle.object_inventory, "object_inventory")
     _require_file(bundle.attribute_inventory, "attribute_inventory")
     _require_file(bundle.action_inventory, "action_inventory")
@@ -76,9 +93,9 @@ def publish_inventory_bundle(
         _require_file(bundle.action_canonical_inventory, "action_canonical_inventory")
     if not bundle.lexicon_dir.is_dir():
         raise FileNotFoundError(f"missing_lexicon_dir: {bundle.lexicon_dir}")
+    require_stage5_lexicon_bundle_state(bundle.lexicon_dir)
 
     target_inventory_dir = target_dir / "inventory"
-    target_lexicon_dir = target_dir / "lexicons"
     object_inventory = target_inventory_dir / "object_inventory.tsv"
     attribute_inventory = target_inventory_dir / "attribute_inventory.tsv"
     action_inventory = target_inventory_dir / "action_inventory.tsv"
@@ -100,6 +117,21 @@ def publish_inventory_bundle(
         _atomic_copy_file(bundle.action_canonical_inventory, action_canonical_inventory)
 
     _replace_tree(bundle.lexicon_dir, target_lexicon_dir)
+    published_at_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    repoint_stage5_lexicon_state(
+        lexicon_dir=target_lexicon_dir,
+        attribute_inventory=attribute_inventory,
+        action_canonical_inventory=action_canonical_inventory,
+        published_from_lexicon_dir=bundle.lexicon_dir,
+        published_at_utc=published_at_utc,
+    )
+
+    rows = inventory_row_counts(
+        object_inventory=object_inventory,
+        attribute_inventory=attribute_inventory,
+        action_inventory=action_inventory,
+        action_canonical_inventory=action_canonical_inventory,
+    )
 
     central_bundle = target_dir / "inventory_bundle.json"
     state = build_inventory_bundle_state(
@@ -113,10 +145,11 @@ def publish_inventory_bundle(
     )
     state.update(
         {
-            "published_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "published_at_utc": published_at_utc,
             "published_from_bundle": str(source_bundle),
             "snapshot_label": snapshot_label,
             "source_stage3_records": source_stage3_records,
+            "inventory_rows": rows,
         }
     )
     write_inventory_bundle(central_bundle, state)
@@ -125,29 +158,28 @@ def publish_inventory_bundle(
         "status": "published",
         "target_bundle": str(central_bundle),
         "snapshot_label": snapshot_label,
-        "rows": {
-            "object_inventory": _count_tsv_rows(object_inventory),
-            "attribute_inventory": _count_tsv_rows(attribute_inventory),
-            "action_inventory": _count_tsv_rows(action_inventory),
-            "action_canonical_inventory": (
-                _count_tsv_rows(action_canonical_inventory)
-                if action_canonical_inventory is not None
-                else None
-            ),
-        },
+        "published_at_utc": published_at_utc,
+        "rows": rows,
+        "lexicon_rows": lexicon_row_counts(target_lexicon_dir),
         "source_bundle": str(source_bundle),
         "target_dir": str(target_dir),
     }
-    if summary_path is not None:
-        with atomic_text_writer(summary_path) as handle:
-            handle.write(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
-            handle.write("\n")
+    canonical_summary_path = target_dir / "publish_summary.json"
+    write_json_atomic(canonical_summary_path, summary)
+    if summary_path is not None and summary_path.absolute() != canonical_summary_path.absolute():
+        write_json_atomic(summary_path, summary)
     return summary
 
 
 def _require_file(path: Path, field_name: str) -> None:
     if not path.is_file():
         raise FileNotFoundError(f"missing_{field_name}: {path}")
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return str(left.absolute()).replace("/", "\\").casefold() == str(
+        right.absolute()
+    ).replace("/", "\\").casefold()
 
 
 def _require_sidecar(path: Path, field_name: str) -> Path:
@@ -176,7 +208,7 @@ def _copy_pipeline_state(source: Path, target: Path, *, replacements: dict[str, 
     if not isinstance(data, dict):
         raise ValueError(f"pipeline_state_must_be_object: {source}")
     data.update(replacements)
-    with atomic_text_writer(target) as handle:
+    with atomic_text_writer(target, newline="\n") as handle:
         handle.write(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
         handle.write("\n")
 
@@ -214,16 +246,6 @@ def _assert_safe_replace_tree(path: Path) -> None:
     root_key = str(ROOT.absolute()).replace("/", "\\").casefold()
     if not key.startswith(root_key + "\\"):
         raise ValueError(f"refuse_to_replace_tree_outside_repo: {path}")
-
-
-def _count_tsv_rows(path: Path) -> int:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        try:
-            next(reader)
-        except StopIteration:
-            return 0
-        return sum(1 for _ in reader)
 
 
 if __name__ == "__main__":
