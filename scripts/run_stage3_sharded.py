@@ -218,6 +218,11 @@ def run_stage3_sharded(
     )
     timing_seconds["build_shards"] = round(time.perf_counter() - step_started, 6)
     non_empty_shards = [shard for shard in shards if shard.row_count > 0]
+    empty_shard_summaries = [
+        materialize_empty_stage3_shard(shard)
+        for shard in shards
+        if shard.row_count == 0
+    ]
     requested_jobs = jobs if jobs is not None else max(1, len(non_empty_shards))
     if requested_jobs < 1:
         raise ValueError("--jobs must be greater than zero")
@@ -232,7 +237,7 @@ def run_stage3_sharded(
         gpu_devices=gpu_devices,
     )
     step_started = time.perf_counter()
-    shard_summaries = run_stage3_shards(
+    shard_summaries = empty_shard_summaries + run_stage3_shards(
         non_empty_shards,
         model=model,
         batch_size=batch_size,
@@ -476,6 +481,64 @@ def build_stage3_shards(
                 )
             )
     return shards
+
+
+def materialize_empty_stage3_shard(shard: Stage3Shard) -> dict[str, Any]:
+    """Write the complete Stage 3 artifact contract for a zero-row shard."""
+    if shard.row_count != 0:
+        raise ValueError("only zero-row Stage 3 shards may be materialized as empty")
+    for path in (
+        shard.output_path,
+        shard.summary_path,
+        shard.progress_path,
+        shard.stdout_path,
+        shard.stderr_path,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    shard.output_path.write_text("", encoding="utf-8")
+    worker_summary = {
+        "total": 0,
+        "written": 0,
+        "model": "",
+        "batch_size": 0,
+        "caption_shape": shard.caption_shape,
+        "gpu_mode": "none",
+        "gpu_enabled": False,
+        "output_path": str(shard.output_path),
+        "empty_shard": True,
+    }
+    shard.summary_path.write_text(
+        json.dumps(worker_summary, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_json(
+        shard.progress_path,
+        {
+            "status": "complete",
+            "phase": "empty_shard",
+            "caption_shape": shard.caption_shape,
+            "total": 0,
+            "written": 0,
+            "output_path": str(shard.output_path),
+        },
+    )
+    shard.stdout_path.write_text("", encoding="utf-8")
+    shard.stderr_path.write_text("", encoding="utf-8")
+    return {
+        "caption_shape": shard.caption_shape,
+        "shard_index": shard.shard_index,
+        "row_count": 0,
+        "gpu_device": None,
+        "input_path": str(shard.input_path),
+        "output_path": str(shard.output_path),
+        "summary_path": str(shard.summary_path),
+        "progress_path": str(shard.progress_path),
+        "stdout_path": str(shard.stdout_path),
+        "stderr_path": str(shard.stderr_path),
+        "worker_summary": worker_summary,
+        "timing_seconds": {"total": 0.0},
+    }
 
 
 def run_stage3_shards(

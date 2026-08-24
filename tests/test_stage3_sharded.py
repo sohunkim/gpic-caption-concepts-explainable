@@ -18,8 +18,10 @@ from run_stage3_sharded import (  # noqa: E402
     Stage3Shard,
     build_stage3_worker_command,
     contiguous_shard_sizes,
+    materialize_empty_stage3_shard,
     merge_shard_jsonl_outputs,
     parse_gpu_devices,
+    run_stage3_sharded,
     split_jsonl_contiguous,
     split_jsonl_contiguous_parsed_reference,
 )
@@ -164,6 +166,61 @@ class Stage3ShardedTests(unittest.TestCase):
         self.assertEqual(command[command.index("--disable-components") + 1], "ner")
         self.assertEqual(command[command.index("--caption-shape") + 1], "tag_list")
         self.assertEqual(command[command.index("--batch-size") + 1], "192")
+
+    def test_materialize_empty_stage3_shard_writes_mergeable_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shard = Stage3Shard(
+                caption_shape="tag_list",
+                shard_index=1,
+                input_path=root / "input.jsonl",
+                output_path=root / "stage3" / "tag_list_shard_0001.jsonl",
+                summary_path=root / "summaries" / "tag_list_shard_0001.jsonl",
+                progress_path=root / "progress" / "tag_list_shard_0001.json",
+                stdout_path=root / "logs" / "tag_list_shard_0001.stdout.log",
+                stderr_path=root / "logs" / "tag_list_shard_0001.stderr.log",
+                row_count=0,
+                gpu_device=None,
+            )
+
+            summary = materialize_empty_stage3_shard(shard)
+
+            self.assertEqual(summary["row_count"], 0)
+            self.assertEqual(shard.output_path.read_text(encoding="utf-8"), "")
+            self.assertEqual(list(iter_jsonl(shard.summary_path))[0]["total"], 0)
+            merged = root / "merged.jsonl"
+            self.assertEqual(
+                merge_shard_jsonl_outputs([shard.output_path], merged)["total"],
+                0,
+            )
+
+    def test_run_stage3_sharded_completes_when_both_shapes_are_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caption_records = root / "caption_records.jsonl"
+            sentence_rows = root / "sentence_rows.jsonl"
+            tag_rows = root / "tag_rows.jsonl"
+            for path in (caption_records, sentence_rows, tag_rows):
+                path.write_text("", encoding="utf-8")
+
+            summary = run_stage3_sharded(
+                caption_records=caption_records,
+                sentence_rows=sentence_rows,
+                tag_rows=tag_rows,
+                output_dir=root / "out",
+                sentence_shards=2,
+                tag_shards=2,
+                gpu_mode="require",
+                gpu_devices=["0", "1"],
+            )
+
+            self.assertEqual(summary["stage3_combined"]["total"], 0)
+            self.assertEqual(len(summary["shards"]), 4)
+            self.assertTrue(all(row["row_count"] == 0 for row in summary["shards"]))
+            self.assertEqual(
+                (root / "out" / "stage3_records.jsonl").read_text(encoding="utf-8"),
+                "",
+            )
 
     def test_parse_gpu_devices(self) -> None:
         self.assertEqual(parse_gpu_devices("0, 1,,2 "), ["0", "1", "2"])

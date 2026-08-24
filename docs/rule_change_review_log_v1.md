@@ -7222,3 +7222,38 @@ Verification:
 - Unit tests cover `key`, `id`, `caption_id`, matching fields, conflicting
   fields, missing identifiers, and Lite `id` row-order merge.
 - A 100-caption two-unit MLXP smoke must match a single formal run before 10M.
+
+## 2026-08-25: Explicit Empty Stage 3 Shard Artifacts
+
+Proposed orchestration change:
+
+- Materialize the normal Stage 3 output, summary, progress, and log artifact
+  contract for every zero-row sentence or tag-list shard without launching a
+  spaCy worker.
+- Include zero-row shard summaries in the parent summary and merge their empty
+  JSONL outputs through the same ordered merge path as non-empty shards.
+
+Target stage and rule impact:
+
+- Stage 3 sharded orchestration only. No tokenization, annotation, extraction,
+  canonicalization, or count semantics change.
+
+Expected count-table impact:
+
+- None. Empty shards contribute exactly zero records.
+- Prevents sentence-only or tag-only scale-out units from failing because the
+  opposite shape has no worker output file.
+
+Risk and reversibility:
+
+- The only new artifacts are explicit zero-row files and metadata for shards
+  that previously had no output. Reversible by reducing shape shard counts,
+  but retaining the explicit contract is safer for arbitrary Lite/Full units.
+
+Verification:
+
+- Unit tests verify an empty shard is mergeable and has a zero-row summary.
+- An all-empty sentence/tag run completes even with GPU-required mode because
+  no empty shard starts a model worker.
+- The 100-caption two-unit MLXP smoke must cover sentence-only units before the
+  10M launch.
