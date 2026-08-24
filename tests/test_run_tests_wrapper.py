@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import unittest
 
@@ -11,6 +12,7 @@ RUN_TESTS = ROOT / "scripts" / "run_tests.ps1"
 
 
 class RunTestsWrapperTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("powershell.exe"), "requires Windows PowerShell")
     def test_two_invocations_restore_test_temp_environment(self) -> None:
         original_temp = os.environ.get("TEMP", "")
         command = (

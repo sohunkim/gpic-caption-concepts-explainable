@@ -1746,3 +1746,32 @@ failures could mix true setup problems with probe-only environment differences.
 
 - Wrapper re-entry passed in the targeted group.
 - Full repository result: `433 passed, 1 warning, 26 subtests passed`.
+
+# 2026-08-25: Windows-Only Tests Produced False Linux Regression Failures
+
+## What was wrong
+
+- Two background-runner tests patched the shared `os.name` module attribute to
+  `nt`. On Linux this also changed what `pathlib.Path` observed, causing an
+  unsupported `WindowsPath` construction before the intended assertion.
+- The PowerShell wrapper re-entry test unconditionally launched
+  `powershell.exe`, which is not installed in the MLXP Linux runtime.
+- As a result, the first full MLXP regression reported three platform-test
+  failures even though the fixed-lexicon retention tests themselves passed.
+
+## Permanent guard
+
+- Windows command normalization now uses a patchable `_is_windows()` boundary
+  and `PureWindowsPath`, so its command construction can be tested on Linux
+  without mutating global platform state.
+- The PowerShell wrapper integration test is explicitly skipped when
+  `powershell.exe` is unavailable. It continues to run on Windows.
+
+## Verification
+
+- Targeted Windows-side result:
+  `11 passed` for the background runner, PowerShell wrapper, and fixed-lexicon
+  scale-out tests.
+- Full Windows-side result after the correction:
+  `448 passed, 1 warning in 87.98s`.
+- A full MLXP Linux rerun is required before the retention smoke is accepted.

@@ -98,7 +98,7 @@ class BackgroundJobIncidentGateTest(unittest.TestCase):
         process = Mock(pid=4321)
 
         with (
-            patch.object(background.os, "name", "nt"),
+            patch.object(background, "_is_windows", return_value=True),
             patch.object(background.subprocess, "Popen", return_value=process) as popen,
         ):
             result = background.start_job(args)
@@ -133,7 +133,7 @@ class BackgroundJobIncidentGateTest(unittest.TestCase):
         ]
 
         with (
-            patch.object(background.os, "name", "nt"),
+            patch.object(background, "_is_windows", return_value=True),
             patch.object(background.subprocess, "Popen") as popen,
             self.assertRaisesRegex(SystemExit, "Do not wrap scripts/run_mlxp_bash.py"),
         ):

@@ -4,7 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import time
@@ -234,15 +234,19 @@ def adopt_job(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def normalize_child_command(job_args: list[str]) -> list[str]:
-    if os.name != "nt" or not job_args:
+    if not _is_windows() or not job_args:
         return job_args
     executable = job_args[0]
     if not executable.lower().endswith(".ps1"):
         return job_args
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     powershell = (
-        Path(system_root)
+        PureWindowsPath(system_root)
         / "System32"
         / "WindowsPowerShell"
         / "v1.0"
