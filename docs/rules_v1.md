@@ -117,6 +117,9 @@
 
 v1 기준:
 
+- caption identifier는 Nano-era row의 `key` 또는 Lite/Full immutable shard의
+  `id`에서 읽는다. 둘이 함께 있으면 값이 같아야 하며, 다르면 error로
+  처리한다.
 - 확인된 GPIC row field인 `caption_type`을 사용한다.
 - `caption_type == "tag"`이면 내부 shape를 `tag_list`로 둔다.
 - `caption_type in {"short", "medium", "long"}`이면 내부 shape를 `sentence`로 둔다.

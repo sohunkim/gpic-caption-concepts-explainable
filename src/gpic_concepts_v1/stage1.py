@@ -76,6 +76,25 @@ def caption_shape_from_gpic_row(row: Mapping[str, Any]) -> CaptionShape:
     return caption_shape_from_gpic_caption_type(row["caption_type"])
 
 
+def caption_id_from_gpic_row(row: Mapping[str, Any]) -> str:
+    """Return the caption identifier from supported GPIC row schemas.
+
+    Nano-era caption exports use ``key`` while the immutable Lite/Full shard
+    manifests use ``id`` for the same caption SHA.  Accept either spelling,
+    but never guess when a row supplies conflicting values.
+    """
+    present = [(field, str(row[field])) for field in ("key", "id") if field in row]
+    if not present:
+        raise CaptionShapeError("GPIC row is missing required identifier: key or id")
+    values = {value for _field, value in present}
+    if len(values) != 1:
+        raise CaptionShapeError(
+            "GPIC row has conflicting caption identifiers: "
+            + ", ".join(f"{field}={value!r}" for field, value in present)
+        )
+    return present[0][1]
+
+
 def make_caption_record(
     caption_id: str,
     caption: str,
@@ -114,15 +133,14 @@ def make_caption_record(
 
 def make_caption_record_from_gpic_row(row: Mapping[str, Any]) -> CaptionRecord:
     """Build the Stage 1 CaptionRecord from one confirmed GPIC caption row."""
-    if "key" not in row:
-        raise CaptionShapeError("GPIC row is missing required field: key")
     if "caption" not in row:
         raise CaptionShapeError("GPIC row is missing required field: caption")
 
+    caption_id = caption_id_from_gpic_row(row)
     shape = caption_shape_from_gpic_row(row)
     meta = {key: value for key, value in row.items() if key != "caption"}
     return make_caption_record(
-        caption_id=str(row["key"]),
+        caption_id=caption_id,
         caption=str(row["caption"]),
         meta=meta,
         caption_shape=shape,

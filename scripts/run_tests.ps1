@@ -49,6 +49,16 @@ try {
             [string[]]$PytestArgs,
             [int]$TimeoutSeconds
         )
+        $HasBaseTemp = $false
+        foreach ($PytestArg in $PytestArgs) {
+            if ($PytestArg -eq "--basetemp" -or $PytestArg.StartsWith("--basetemp=")) {
+                $HasBaseTemp = $true
+                break
+            }
+        }
+        if (-not $HasBaseTemp) {
+            $PytestArgs = @("--basetemp", (Join-Path $TempRoot "pytest")) + $PytestArgs
+        }
         & $RunPython $PytestTimeoutRunner --timeout-seconds $TimeoutSeconds -- @PytestArgs
         $script:RunExitCode = $LASTEXITCODE
     }

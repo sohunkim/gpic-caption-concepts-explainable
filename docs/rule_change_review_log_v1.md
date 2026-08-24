@@ -7191,3 +7191,31 @@ Decision status:
 
 - Approved by user in chat on 2026-08-25 for resumable 10M/100M fixed-lexicon
   extraction with 1-8 GPUs and GPU-count changes across restarts.
+
+## 2026-08-25: Stage 1 Lite/Full Caption Identifier Alias
+
+Proposed rule or lexicon change:
+
+- Accept `id` as the Lite/Full immutable-shard spelling of the same caption
+  SHA stored as `key` in Nano-era GPIC rows.
+- If both fields occur, require exact equality and fail on conflict.
+
+Target stage and rule id:
+
+- Stage 1 input adaptation under R1; no extraction or lexicon rule changes.
+
+Expected count-table impact:
+
+- None for equivalent inputs. This only lets the formal Lite/Full shard schema
+  reach the existing Stage 1-6 implementation without rewriting source data.
+
+Risk and reversibility:
+
+- Conflicting identifiers are blocked instead of guessed. The change is
+  reversible by normalizing immutable input rows back to `key` before Stage 1.
+
+Verification:
+
+- Unit tests cover `key`, `id`, matching dual fields, conflicting dual fields,
+  and missing identifiers.
+- A 100-caption two-unit MLXP smoke must match a single formal run before 10M.

@@ -3,6 +3,7 @@ import unittest
 from gpic_concepts_v1.stage1 import (
     TAG_LIST_ROUTE_RULE_ID,
     CaptionShapeError,
+    caption_id_from_gpic_row,
     caption_shape_from_gpic_caption_type,
     caption_shape_from_gpic_row,
     determine_caption_shape,
@@ -95,6 +96,33 @@ class Stage1Test(unittest.TestCase):
         self.assertEqual(record.caption_shape, "tag_list")
         self.assertFalse(record.skipped)
         self.assertIsNone(record.skip_reason)
+
+    def test_gpic_row_accepts_lite_id_alias(self) -> None:
+        record = make_caption_record_from_gpic_row(
+            {
+                "id": "lite-sha",
+                "caption": "A dog sits on a wooden bench.",
+                "caption_type": "short",
+                "global_index": 7,
+            }
+        )
+
+        self.assertEqual(record.caption_id, "lite-sha")
+        self.assertEqual(record.meta["id"], "lite-sha")
+
+    def test_gpic_row_accepts_matching_key_and_id(self) -> None:
+        self.assertEqual(
+            caption_id_from_gpic_row({"key": "same-sha", "id": "same-sha"}),
+            "same-sha",
+        )
+
+    def test_gpic_row_rejects_conflicting_key_and_id(self) -> None:
+        with self.assertRaisesRegex(CaptionShapeError, "conflicting caption identifiers"):
+            caption_id_from_gpic_row({"key": "key-sha", "id": "id-sha"})
+
+    def test_gpic_row_requires_key_or_id(self) -> None:
+        with self.assertRaisesRegex(CaptionShapeError, "key or id"):
+            caption_id_from_gpic_row({"caption": "A caption."})
 
     def test_gpic_row_requires_caption_type(self) -> None:
         with self.assertRaises(CaptionShapeError):
