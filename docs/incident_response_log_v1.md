@@ -1774,4 +1774,6 @@ failures could mix true setup problems with probe-only environment differences.
   scale-out tests.
 - Full Windows-side result after the correction:
   `448 passed, 1 warning in 87.98s`.
-- A full MLXP Linux rerun is required before the retention smoke is accepted.
+- Full MLXP Linux result after the correction:
+  `447 passed, 1 skipped, 4 warnings in 19.47s`. The single skip is the
+  PowerShell-only wrapper integration test that passed in the Windows run.
