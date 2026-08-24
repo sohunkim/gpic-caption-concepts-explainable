@@ -1777,3 +1777,33 @@ failures could mix true setup problems with probe-only environment differences.
 - Full MLXP Linux result after the correction:
   `447 passed, 1 skipped, 4 warnings in 19.47s`. The single skip is the
   PowerShell-only wrapper integration test that passed in the Windows run.
+
+# 2026-08-25: Repo-Local Pytest Scratch Intermittently Denied Access
+
+## What was wrong
+
+- `run_tests.ps1` placed every unique pytest scratch tree under
+  `outputs/.test_tmp`. Hundreds of old run directories had accumulated there.
+- A new verifier test run failed during pytest temp cleanup with `WinError 5`
+  even though the same tests and files were valid.
+- Re-running the same tests with `GPIC_TEST_TEMP_ROOT` in the OS scratch area
+  passed `8/8`, isolating the failure to the repo-local temp location.
+
+## Permanent guard
+
+- The default scratch base now uses the platform OS temp directory under the
+  project-specific name `gpic-explainable-link-tests`.
+- An explicit `GPIC_TEST_TEMP_ROOT` still overrides the default.
+- The wrapper restores every process environment variable and then makes a
+  bounded best-effort cleanup of only its unique run directory.
+- A wrapper test prevents the default from drifting back under repository
+  `outputs`.
+
+## Verification required
+
+- The new verifier, fixed-lexicon, and wrapper tests passed `10/10` with the
+  default wrapper.
+- Full Windows result after the scratch change:
+  `451 passed, 1 warning in 85.69s`.
+- Full MLXP Linux regression remains required for the final commit before the
+  retention smoke is accepted.

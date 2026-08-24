@@ -38,6 +38,12 @@ class RunTestsWrapperTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(os.environ.get("TEMP", ""), original_temp)
 
+    def test_default_scratch_is_not_under_repository_outputs(self) -> None:
+        script = RUN_TESTS.read_text(encoding="utf-8")
+
+        self.assertIn("[System.IO.Path]::GetTempPath()", script)
+        self.assertNotIn('Join-Path $Root "outputs\\.test_tmp', script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ try {
     $ScratchBase = if ($env:GPIC_TEST_TEMP_ROOT) {
         $env:GPIC_TEST_TEMP_ROOT
     } else {
-        Join-Path $Root "outputs\.test_tmp\gpic-explainable-link-tests"
+        Join-Path ([System.IO.Path]::GetTempPath()) "gpic-explainable-link-tests"
     }
     $ScratchRoot = (New-Item -ItemType Directory -Force -Path $ScratchBase).FullName
     $TempRoot = (New-Item -ItemType Directory -Force -Path (Join-Path $ScratchRoot ("run-" + [guid]::NewGuid().ToString("N")))).FullName
@@ -131,6 +131,18 @@ try {
             [Environment]::SetEnvironmentVariable($Name, $null, "Process")
         } else {
             [Environment]::SetEnvironmentVariable($Name, [string]$OriginalValue, "Process")
+        }
+    }
+    if ($TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
+        for ($Attempt = 0; $Attempt -lt 3; $Attempt++) {
+            try {
+                Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction Stop
+                break
+            } catch {
+                if ($Attempt -lt 2) {
+                    Start-Sleep -Milliseconds 200
+                }
+            }
         }
     }
 }

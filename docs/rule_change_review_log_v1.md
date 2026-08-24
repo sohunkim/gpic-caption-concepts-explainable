@@ -7292,8 +7292,9 @@ Verification:
   then pass hash-verified resume before the 10M lexical launch.
 - Local regression on 2026-08-25:
   `scripts/run_tests.ps1 --pytest --timeout-seconds 900` completed with
-  `448 passed, 1 warning in 87.98s`. This accepts the local implementation for
-  remote smoke testing; it does not by itself authorize the 10M lexical run.
+  `451 passed, 1 warning in 85.69s` after adding the equivalence verifier and
+  temp-scratch guard. This accepts the local implementation for remote smoke
+  testing; it does not by itself authorize the 10M lexical run.
 
 Decision status:
 
