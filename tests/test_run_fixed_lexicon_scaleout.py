@@ -15,6 +15,7 @@ for path in (str(SCRIPTS), str(SRC)):
 from run_fixed_lexicon_scaleout import (
     _artifact_records,
     _artifacts_are_valid,
+    apply_unit_retention,
     InputShard,
     RECEIPT_KIND,
     build_work_units,
@@ -70,6 +71,11 @@ def test_receipt_requires_matching_identity_unit_and_artifact_hash(tmp_path: Pat
     receipt = {
         "kind": RECEIPT_KIND,
         "run_identity_sha256": "a" * 64,
+        "retention": {
+            "policy": "full",
+            "pruned_paths": [],
+            "reclaimed_bytes": 0,
+        },
         "unit": {
             "unit_id": unit.unit_id,
             "rows": unit.rows,
@@ -98,6 +104,82 @@ def test_receipt_requires_matching_identity_unit_and_artifact_hash(tmp_path: Pat
         run_identity_sha256="a" * 64,
         verify_hashes=True,
     )
+
+
+def test_receipt_requires_matching_retention_policy(tmp_path: Path) -> None:
+    shard = _shard(0, tmp_path / "input.jsonl")
+    unit = build_work_units([shard], 1)[0]
+    artifact = tmp_path / "units" / unit.unit_id / "stage6" / "objects.tsv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("count_key\tcount\nobject\t1\n", encoding="utf-8")
+    receipt_path = tmp_path / "receipts" / f"{unit.unit_id}.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "kind": RECEIPT_KIND,
+                "run_identity_sha256": "c" * 64,
+                "retention": {
+                    "policy": "canonical_counts",
+                    "pruned_paths": [],
+                    "reclaimed_bytes": 0,
+                },
+                "unit": {
+                    "unit_id": unit.unit_id,
+                    "rows": unit.rows,
+                    "shards": [shard.__dict__],
+                },
+                "artifacts": _artifact_records([artifact], output_root=tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert unit_receipt_is_valid(
+        unit,
+        output_root=tmp_path,
+        run_identity_sha256="c" * 64,
+        verify_hashes=True,
+        retention_policy="canonical_counts",
+    )
+    assert not unit_receipt_is_valid(
+        unit,
+        output_root=tmp_path,
+        run_identity_sha256="c" * 64,
+        verify_hashes=True,
+        retention_policy="full",
+    )
+
+
+def test_canonical_counts_retention_preserves_stage5_and_unit_stage6(tmp_path: Path) -> None:
+    unit_dir = tmp_path / "units" / "unit_000000"
+    retained = [
+        unit_dir / "mixed_pipeline_summary.jsonl",
+        unit_dir / "pipeline_state.json",
+        unit_dir / "stage5" / "summary.jsonl",
+        unit_dir / "stage456_sharded" / "shards" / "shard_0000" / "stage5" / "canonical_mentions.jsonl",
+        unit_dir / "stage6" / "objects.tsv",
+    ]
+    pruned = [
+        unit_dir / "stage1" / "captions.jsonl",
+        unit_dir / "stage3_sharded" / "records.jsonl",
+        unit_dir / "stage456_sharded" / "stage3_shards" / "shard.jsonl",
+        unit_dir / "stage456_sharded" / "shards" / "shard_0000" / "stage4" / "facts.jsonl",
+        unit_dir / "stage456_sharded" / "shards" / "shard_0000" / "stage6" / "objects.tsv",
+        unit_dir / "stage456_sharded" / "stage6_merged" / "objects.tsv",
+    ]
+    for path in retained + pruned:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    result = apply_unit_retention(unit_dir, policy="canonical_counts")
+
+    assert result["policy"] == "canonical_counts"
+    assert result["reclaimed_bytes"] == sum(len(path.name.encode()) for path in pruned)
+    assert all(path.exists() for path in retained)
+    assert all(not path.exists() for path in pruned)
+    assert "stage1" in result["pruned_paths"]
+    assert "stage456_sharded/shards/shard_0000/stage4" in result["pruned_paths"]
 
 
 def test_unit_without_receipt_is_never_complete(tmp_path: Path) -> None:

@@ -7257,3 +7257,45 @@ Verification:
   no empty shard starts a model worker.
 - The 100-caption two-unit MLXP smoke must cover sentence-only units before the
   10M launch.
+
+## 2026-08-25: Fixed-Lexicon Unit Retention Policy
+
+Proposed orchestration change:
+
+- Add an explicit `full|canonical_counts` unit retention policy to the fixed-
+  lexicon scale-out run identity and atomic completion receipt.
+- Under `canonical_counts`, verify all receipt artifacts by SHA before removing
+  only known Stage 1/3/4 and shard-local Stage 6 intermediates. Preserve all
+  Stage 5 canonical artifacts and unit Stage 6 count tables.
+
+Target stage and rule impact:
+
+- R28 fixed-lexicon scale-out artifact lifecycle only. Stage 1-6 extraction,
+  canonicalization, and count semantics are unchanged.
+
+Expected count-table impact:
+
+- None. Final merge consumes the preserved unit Stage 6 tables.
+
+Risk and reversibility:
+
+- Main risk is deleting a required artifact. It is controlled by an explicit
+  allowlist, descendant-path checks, pre/post-prune SHA verification, receipt
+  policy matching, and a default `full` policy.
+- Reversible by rerunning the immutable unit with `full`; a crash before atomic
+  receipt publication leaves the unit incomplete and forces recomputation.
+
+Verification:
+
+- Unit tests cover retention mismatch and preservation/removal boundaries.
+- A 100-caption MLXP smoke must match the prior Stage 5 and Stage 6 artifacts,
+  then pass hash-verified resume before the 10M lexical launch.
+- Local regression on 2026-08-25:
+  `scripts/run_tests.ps1 --pytest --timeout-seconds 900` completed with
+  `448 passed, 1 warning in 87.98s`. This accepts the local implementation for
+  remote smoke testing; it does not by itself authorize the 10M lexical run.
+
+Decision status:
+
+- Approved by the user on 2026-08-25 as part of the resumed 10M fixed-lexicon
+  rollout, with large data remaining entirely on MLXP storage.

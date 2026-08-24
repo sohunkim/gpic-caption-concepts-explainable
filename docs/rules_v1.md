@@ -973,5 +973,12 @@ frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
 - Global Stage 6 tables are produced with the existing Stage 6 shard-count
   merger. Stage 5 unit roots remain independently streamable for downstream
   materialization and caption-order exposure accounting.
+- Unit retention is an explicit immutable run setting. `full` preserves every
+  intermediate. `canonical_counts` preserves receipt-verified Stage 5
+  canonical artifacts and unit Stage 6 count tables, and removes only known
+  Stage 1/3/4 and shard-local Stage 6 intermediates after pre-prune SHA checks.
+- A retention receipt records the policy, removed relative paths, and reclaimed
+  bytes. Resume must reject a receipt whose retention policy differs from the
+  run identity, and final Stage 6 merge may consume only retained unit counts.
 - Large captions, Stage outputs, and count artifacts stay on MLXP storage.
   Desktop transfer is limited to versioned code and small manifests.
