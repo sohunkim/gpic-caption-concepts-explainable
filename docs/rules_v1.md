@@ -941,3 +941,34 @@ Gate rules:
 - If manual resolution chooses one Morphy query from an ambiguous query set,
   write the selected singular query into `selected_query` and preserve the
   decision note in the manual decision artifact.
+
+## Appendix. Fixed-Lexicon Scale-Out Execution Contract
+
+This contract extends R28 for GPIC Lite/Full extraction after the inventory is
+frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
+
+- The immutable caption-shard manifest and the completed current inventory
+  bundle are the only semantic inputs.
+- Contiguous input shards are grouped into deterministic work units. A work
+  unit identity includes every input shard row count/SHA and the inventory
+  bundle SHA; runtime GPU IDs and worker count are excluded from identity.
+- Each work unit runs the existing formal mixed Stage 1-6 implementation. No
+  separate extraction, fallback, canonicalization, or count rule is allowed in
+  the scale-out wrapper.
+- A work unit is complete only after its formal summary, Stage 5 artifacts,
+  Stage 6 count tables, and receipt pass row/hash checks. The completion
+  receipt is written atomically; a unit directory without that receipt is
+  always incomplete and is never consumed by resume or final merge.
+- Resume skips only receipt-verified completed units. An interrupted temporary
+  unit is not accepted as progress and may be replaced only after the wrapper
+  verifies that no worker still owns it.
+- Available GPU count may differ between attempts. Remaining work units are
+  assigned dynamically to the GPUs visible in the new attempt.
+- The outer scale-out entrypoint is incident-gated. Its child unit executions
+  are covered by the parent gate and must not create independent repository
+  incident markers.
+- Global Stage 6 tables are produced with the existing Stage 6 shard-count
+  merger. Stage 5 unit roots remain independently streamable for downstream
+  materialization and caption-order exposure accounting.
+- Large captions, Stage outputs, and count artifacts stay on MLXP storage.
+  Desktop transfer is limited to versioned code and small manifests.

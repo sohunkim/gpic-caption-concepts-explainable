@@ -7133,3 +7133,61 @@ Verification result:
 - `count_key` and storage-table names are normalized away; semantic labels,
   parents, counts, caption counts, examples, raw variants, and rule IDs remain
   part of the equality check.
+
+## 2026-08-25: R28 Fixed-Lexicon Scale-Out Orchestration
+
+Proposed rule or lexicon change:
+
+- Add a formal outer runner for fixed-inventory GPIC Lite/Full extraction.
+- Group immutable caption shards into deterministic work units, run the
+  existing mixed Stage 1-6 implementation for each unit, and atomically write
+  a completion receipt only after output validation.
+- Permit resume with a different visible GPU count by keeping runtime worker
+  assignments outside the immutable run identity.
+- Merge completed unit Stage 6 directories through the existing count-table
+  merger and preserve Stage 5 unit roots for downstream adapters.
+
+Target stage and rule id:
+
+- Operational execution across Stage 1-6 under R28.
+
+Existing rules affected:
+
+- R1-R27 semantics are unchanged.
+- R28 gains a production-scale resume and artifact-integrity contract.
+
+Expected count-table impact:
+
+- None relative to running the same immutable inputs and inventory bundle in
+  one formal mixed run. Unit-local count tables are intermediate partitions;
+  the existing Stage 6 merger produces the global tables.
+
+False positive risk:
+
+- None from extraction semantics. The main operational risk is accepting a
+  stale or partial unit, addressed by receipt/input/inventory hashes and atomic
+  promotion.
+
+False negative risk:
+
+- None from extraction semantics. A missing unit remains visibly incomplete
+  and blocks final merge.
+
+Reversibility:
+
+- Fully reversible by running the existing monolithic/sharded mixed runner on
+  the same inputs. The scale-out wrapper does not mutate inventories.
+
+Verification plan:
+
+- Unit-test deterministic grouping, identity stability across GPU counts,
+  receipt validation, partial-output rejection, and completed-unit resume.
+- Compare a bounded multi-unit run against a single formal run for Stage 5 row
+  totals and every Stage 6 table.
+- Verify remote progress, cgroup memory, GPU assignment, and output growth
+  before launching 10M.
+
+Decision status:
+
+- Approved by user in chat on 2026-08-25 for resumable 10M/100M fixed-lexicon
+  extraction with 1-8 GPUs and GPU-count changes across restarts.
