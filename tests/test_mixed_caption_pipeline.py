@@ -112,6 +112,38 @@ class MixedCaptionPipelineTest(unittest.TestCase):
                 output_path=self.tmp_path / "out.jsonl",
             )
 
+    def test_combines_lite_id_rows_in_caption_order(self) -> None:
+        caption_records_path = self.tmp_path / "caption_records.jsonl"
+        sentence_rows_path = self.tmp_path / "sentence_rows.jsonl"
+        tag_rows_path = self.tmp_path / "tag_rows.jsonl"
+        output_path = self.tmp_path / "caption_rows_mixed.jsonl"
+        write_jsonl(
+            caption_records_path,
+            [{"caption_id": "lite-sha", "caption_shape": "sentence", "skipped": False}],
+        )
+        write_jsonl(
+            sentence_rows_path,
+            [
+                {
+                    "id": "lite-sha",
+                    "caption": "A dog runs.",
+                    "caption_type": "short",
+                    "global_index": 0,
+                }
+            ],
+        )
+        write_jsonl(tag_rows_path, [])
+
+        summary = self.module.combine_caption_rows_in_caption_order(
+            caption_records_path=caption_records_path,
+            sentence_rows_path=sentence_rows_path,
+            tag_rows_path=tag_rows_path,
+            output_path=output_path,
+        )
+
+        self.assertEqual(summary["written"], 1)
+        self.assertEqual(list(iter_jsonl(output_path))[0]["id"], "lite-sha")
+
     def test_combine_stage3_preserves_raw_stage3_lines(self) -> None:
         caption_records_path = self.tmp_path / "caption_records.jsonl"
         sentence_stage3_path = self.tmp_path / "sentence_stage3.jsonl"

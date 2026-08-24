@@ -77,15 +77,27 @@ def caption_shape_from_gpic_row(row: Mapping[str, Any]) -> CaptionShape:
 
 
 def caption_id_from_gpic_row(row: Mapping[str, Any]) -> str:
-    """Return the caption identifier from supported GPIC row schemas.
+    """Return the caption identifier from supported pipeline row schemas.
 
     Nano-era caption exports use ``key`` while the immutable Lite/Full shard
-    manifests use ``id`` for the same caption SHA.  Accept either spelling,
-    but never guess when a row supplies conflicting values.
+    manifests use ``id`` for the same caption SHA. Downstream records use
+    ``caption_id``. Accept all three spellings, but never guess when a row
+    supplies conflicting values.
     """
-    present = [(field, str(row[field])) for field in ("key", "id") if field in row]
+    present: list[tuple[str, str]] = []
+    for field in ("key", "id", "caption_id"):
+        if field not in row:
+            continue
+        value = row[field]
+        if not isinstance(value, str) or not value:
+            raise CaptionShapeError(
+                f"GPIC row identifier {field} must be a non-empty string"
+            )
+        present.append((field, value))
     if not present:
-        raise CaptionShapeError("GPIC row is missing required identifier: key or id")
+        raise CaptionShapeError(
+            "GPIC row is missing required identifier: key, id, or caption_id"
+        )
     values = {value for _field, value in present}
     if len(values) != 1:
         raise CaptionShapeError(

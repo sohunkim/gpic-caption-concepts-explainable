@@ -7,6 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from gpic_concepts_v1.stage1 import caption_id_from_gpic_row
+
 
 JsonObject = dict[str, Any]
 
@@ -455,7 +457,7 @@ def first_or_none(rows: list[JsonObject]) -> JsonObject | None:
 
 
 def caption_id(row: JsonObject) -> str:
-    return str(row.get("key") or row.get("caption_id"))
+    return caption_id_from_gpic_row(row)
 
 
 def iter_jsonl(path: str | Path) -> Iterable[JsonObject]:

@@ -116,12 +116,24 @@ class Stage1Test(unittest.TestCase):
             "same-sha",
         )
 
+    def test_pipeline_row_accepts_caption_id_alias(self) -> None:
+        self.assertEqual(
+            caption_id_from_gpic_row({"caption_id": "canonical-sha"}),
+            "canonical-sha",
+        )
+
+    def test_pipeline_row_rejects_conflicting_id_and_caption_id(self) -> None:
+        with self.assertRaisesRegex(CaptionShapeError, "conflicting caption identifiers"):
+            caption_id_from_gpic_row(
+                {"id": "lite-sha", "caption_id": "different-sha"}
+            )
+
     def test_gpic_row_rejects_conflicting_key_and_id(self) -> None:
         with self.assertRaisesRegex(CaptionShapeError, "conflicting caption identifiers"):
             caption_id_from_gpic_row({"key": "key-sha", "id": "id-sha"})
 
-    def test_gpic_row_requires_key_or_id(self) -> None:
-        with self.assertRaisesRegex(CaptionShapeError, "key or id"):
+    def test_gpic_row_requires_supported_identifier(self) -> None:
+        with self.assertRaisesRegex(CaptionShapeError, "key, id, or caption_id"):
             caption_id_from_gpic_row({"caption": "A caption."})
 
     def test_gpic_row_requires_caption_type(self) -> None:

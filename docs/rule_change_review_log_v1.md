@@ -7198,7 +7198,10 @@ Proposed rule or lexicon change:
 
 - Accept `id` as the Lite/Full immutable-shard spelling of the same caption
   SHA stored as `key` in Nano-era GPIC rows.
-- If both fields occur, require exact equality and fail on conflict.
+- Use the same resolver for downstream `caption_id` rows and raw `key`/`id`
+  rows so row-order validation cannot silently diverge from Stage 1.
+- If multiple identifier fields occur, require exact equality and fail on
+  conflict.
 
 Target stage and rule id:
 
@@ -7216,6 +7219,6 @@ Risk and reversibility:
 
 Verification:
 
-- Unit tests cover `key`, `id`, matching dual fields, conflicting dual fields,
-  and missing identifiers.
+- Unit tests cover `key`, `id`, `caption_id`, matching fields, conflicting
+  fields, missing identifiers, and Lite `id` row-order merge.
 - A 100-caption two-unit MLXP smoke must match a single formal run before 10M.

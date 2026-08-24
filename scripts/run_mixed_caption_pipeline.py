@@ -35,6 +35,7 @@ from gpic_concepts_v1.runtime_resources import (
     choose_mixed_pipeline_resource_plan,
     detect_hardware_resources,
 )
+from gpic_concepts_v1.stage1 import caption_id_from_gpic_row
 from gpic_concepts_v1.stage1_loader import run_stage1_records
 from gpic_concepts_v1.stage3_annotate import (
     DEFAULT_STAGE3_BATCH_SIZE,
@@ -1553,7 +1554,7 @@ def _raise_if_unexpected_row_id(
     expected_id: str,
     shape: str,
 ) -> None:
-    actual_id = caption_id(dict(row))
+    actual_id = caption_id_from_gpic_row(row)
     if actual_id != expected_id:
         raise ValueError(f"{shape} row order mismatch: expected {expected_id}, got {actual_id}")
 
