@@ -7335,3 +7335,9 @@ Decision status:
   requests, merge-time pause, and failure during drain. These are scheduler/
   lifecycle tests, not a claim of new eight-GPU inference equivalence. The
   partial-start cleanup regression explicitly checks queue-flush cancellation.
+- Linux verification: the same six test modules passed **100 tests in 47.11s**
+  in an isolated MLXP checkout at `0afb96c6172627b722909e6969b46193bb48cfde`,
+  verified clean by `verify_git_handoff.py`. The bounded Python pytest wrapper
+  used a 180s ceiling; no GPU model inference or production data was used.
+- Deployment boundary: the live 10M checkout was separately verified clean at
+  `bd83c796ee654ea8bc584ca7361c5f8d3adde786`. It was not hot-updated or stopped.
