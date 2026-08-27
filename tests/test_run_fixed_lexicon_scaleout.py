@@ -424,3 +424,44 @@ def test_worker_exit_without_done_is_failure_not_infinite_wait(resumable_run):
 def test_gpu_selector_rejects_duplicates_and_empty_tokens(gpus):
     with pytest.raises(ValueError, match="unique selectors"):
         scaleout.discover_gpu_ids(gpus)
+
+
+def test_partial_worker_start_failure_cleans_up_without_queue_flush_wait(tmp_path, monkeypatch):
+    workers, queues = [], []
+
+    class TestQueue(Queue):
+        cancelled = False
+        def __init__(self):
+            super().__init__()
+            queues.append(self)
+        def cancel_join_thread(self):
+            self.cancelled = True
+        def close(self):
+            pass
+
+    class Process:
+        exitcode = None
+        alive = False
+        def __init__(self, **kwargs):
+            self.name = kwargs["name"]
+            workers.append(self)
+        def start(self):
+            if self is workers[1]:
+                raise RuntimeError("fixture process start failure")
+            self.alive = True
+        def is_alive(self):
+            return self.alive
+        def terminate(self):
+            self.alive = False
+            self.exitcode = -15
+        def join(self, timeout):
+            assert timeout > 0 and not self.alive
+
+    monkeypatch.setattr(scaleout.mp, "get_context", lambda _: SimpleNamespace(
+        Queue=TestQueue, Process=Process))
+    unit = build_work_units([_shard(0, tmp_path / "input.jsonl")], 1)[0]
+    with pytest.raises(RuntimeError, match="fixture process start failure"):
+        scaleout._run_units([unit], output_root=tmp_path, completed=set(), gpu_ids=["0", "1"],
+                            settings=None, heartbeat_seconds=0.05)
+    assert workers[0].exitcode == -15
+    assert queues[0].cancelled

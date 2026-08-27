@@ -7318,7 +7318,8 @@ Decision status:
   attempt. No COMPLETE marker is emitted for a paused partial run.
 - Failure handling: nonzero/missing worker completion, failed verification, OOM
   and forced termination remain incidents. Partial process-start failures clean
-  up already-started workers. Teardown has a bounded wait only after compute
+  up already-started workers and cancel pending task-queue flush waits, since
+  terminated consumers cannot drain the pipe. Teardown has a bounded wait only after compute
   has ended or failed; healthy computation has no elapsed-time kill.
 - Risk/limitation: pause drains a whole work unit, not one caption. Global merge
   completes if already started. This feature must be present at run startup;
@@ -7328,8 +7329,9 @@ Decision status:
 - Local verification: bounded pytest over `test_planned_pause`,
   `test_run_fixed_lexicon_scaleout`, `test_run_t5_lexical_followup`,
   `test_verify_fixed_lexicon_retention_smoke`, `test_stage3_sharded`, and
-  `test_incident_gate`: **99 passed in 73.45s**, timeout ceiling 240s.
+  `test_incident_gate`: **100 passed in 70.44s**, timeout ceiling 240s.
   Real CPU subprocess fixtures test 1 -> 2 -> 8 workers, receipt preservation,
   identical final fixture count bytes, corrupted-file recomputation, stale pause
   requests, merge-time pause, and failure during drain. These are scheduler/
-  lifecycle tests, not a claim of new eight-GPU inference equivalence.
+  lifecycle tests, not a claim of new eight-GPU inference equivalence. The
+  partial-start cleanup regression explicitly checks queue-flush cancellation.

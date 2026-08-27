@@ -679,6 +679,9 @@ def _run_units(
                 failure = failure or {"event": "worker_teardown_failed", "worker": worker.name}
                 worker.kill()
                 worker.join(timeout=10)
+        if failure is not None:
+            # Failed workers may never consume queued tasks; do not wait for that pipe.
+            task_queue.cancel_join_thread()
         task_queue.close()
         event_queue.close()
 
