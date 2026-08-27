@@ -172,6 +172,14 @@ command evidence from inside the pod:
 - `whoami`
 - expected repo branch and commit, using `git -C <remote_repo>`
 
+Re-check the interpreter in each target pod, including storage shells. A shared
+venv directory can contain a broken symlink to an image-local Python binary;
+success on a GPU pod does not prove that its storage-shell sibling can execute
+it. Read-only metadata probes should use the verified system interpreter and
+check required imports before use. Formal launchers must validate their exact
+configured interpreter and dependencies before creating output or loading a
+model; never silently substitute a different environment for inference.
+
 Do not assume an MLXP pod can fetch from GitHub. Before attempting a remote
 `git fetch`, `git pull`, or `git merge` that depends on GitHub access, first
 run a bounded auth-free probe with `GIT_TERMINAL_PROMPT=0`. If the probe would
