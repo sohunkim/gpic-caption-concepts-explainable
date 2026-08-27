@@ -1011,3 +1011,16 @@ frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
 - RSS checks are periodic, not an allocator or VRAM hard limit. A single
   oversized caption/metadata row or a native allocation between checks can
   still fail. Do not silently change batch/grouping semantics to recover.
+- A code revision change is not ordinary resume. An explicit verified-unit
+  handoff may start a new run root after a matching-input, matching-grouping
+  old/new smoke has identical Stage 5 row multisets and Stage 6 TSV bytes.
+  Freeze the completed source unit list, original receipt hashes, both code
+  revisions and smoke evidence in the handoff plan. Verify every retained
+  source artifact at startup and before final merge. Source receipts and
+  manifests remain read-only; the new summary lists each unit's original
+  producer and Stage 5 root. No copying, relabeling or double counting of
+  source units is allowed. Ordinary resume still rejects identity changes.
+- Legacy runs without planned-pause control cannot acquire that capability
+  retroactively. A user-approved stop may abandon incomplete units; only
+  receipt-verified completed units qualify for handoff. Never claim a crash
+  or signal termination was a graceful unit-boundary pause.

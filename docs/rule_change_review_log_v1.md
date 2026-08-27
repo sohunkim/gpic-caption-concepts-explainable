@@ -7363,3 +7363,20 @@ Decision status:
 - Deployment: validate the exact Git commit in an isolated MLXP checkout. Do not
   hot-edit or relabel the already-running 10M attempt. Test results and measured
   memory are recorded in `verification_count_merge_memory_20260828.md`.
+
+## 2026-08-28: Verified Completed-Unit Code Handoff
+
+- Approval: user requested adopting the RAM correction by reusing completed
+  500K units instead of waiting for another full run.
+- Scope: R28 artifact orchestration only. No extraction, batch/grouping,
+  inventory or count-policy change. Expected result delta is zero.
+- Use a distinct run root and an explicit frozen handoff plan. Preserve source
+  manifests/receipts, require matching old/new smoke, hash all imported unit
+  artifacts, and record each unit's original producer. Do not weaken ordinary
+  resume's identity check or claim a forced legacy stop was a planned pause.
+- Final counts use the disjoint union of imported and newly completed units;
+  downstream Stage 5 roots are explicit. No large-data duplication or desktop
+  transfer. Both output roots must be retained.
+- Regression: 47 local tests passed in 73.15s, including source immutability,
+  duplicate prevention, corrupt/changed inputs, old/new unit merge and unchanged
+  same-run identity enforcement. See `fixed_lexicon_unit_handoff.md`.

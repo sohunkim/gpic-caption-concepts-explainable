@@ -779,6 +779,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         retention_policy=args.retention_policy,
     )
 
+    reused_units = {}
+    handoff_path = getattr(args, "reuse_verified_units", None)
+    if handoff_path:
+        from fixed_lexicon_handoff import resolve
+        reused_units, handoff = resolve(Path(handoff_path), identity, output_root)
+        identity.pop("identity_sha256")
+        identity["verified_unit_handoff"] = handoff
+        identity["identity_sha256"] = _json_sha256(identity)
+
     output_root.mkdir(parents=True, exist_ok=True)
     run_manifest_path = output_root / "run_manifest.json"
     if run_manifest_path.exists():
@@ -793,7 +802,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     try:
         result = _run_prepared(args, output_root, units, bundle, bundle_path,
-                               preposition_mwe_lexicon, identity, pause)
+                               preposition_mwe_lexicon, identity, pause, reused_units)
         pause.finish(result["status"])
         return result
     except BaseException:
@@ -802,7 +811,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _run_prepared(args, output_root, units, bundle, bundle_path,
-                  preposition_mwe_lexicon, identity, pause) -> dict[str, Any]:
+                  preposition_mwe_lexicon, identity, pause, reused_units=None) -> dict[str, Any]:
+    reused_units = reused_units or {}
     completed = {
         unit.unit_id
         for unit in units
@@ -814,6 +824,7 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
             retention_policy=args.retention_policy,
         )
     }
+    completed.update(reused_units)
     complete_path = output_root / "COMPLETE.json"
     if len(completed) == len(units) and complete_path.exists():
         complete = json.loads(complete_path.read_text(encoding="utf-8"))
@@ -885,11 +896,22 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
     if len(completed) != len(units):
         raise RuntimeError("not all fixed-lexicon units completed")
 
+    if reused_units:
+        from fixed_lexicon_handoff import resolve
+        base_identity = {key: value for key, value in identity.items()
+                         if key not in {"verified_unit_handoff", "identity_sha256"}}
+        base_identity["identity_sha256"] = _json_sha256(base_identity)
+        checked_units, handoff = resolve(Path(args.reuse_verified_units), base_identity, output_root)
+        if checked_units != reused_units or handoff != identity["verified_unit_handoff"]:
+            raise RuntimeError("handoff changed before final merge")
+    unit_dirs = {unit.unit_id: reused_units.get(unit.unit_id, output_root / "units" / unit.unit_id)
+                 for unit in units}
+
     merged_stage6 = output_root / "stage6"
     if merged_stage6.exists() and not (output_root / "COMPLETE.json").exists():
         shutil.rmtree(merged_stage6)
     stage6_summary = merge_stage6_count_dirs(
-        [output_root / "units" / unit.unit_id / "stage6" for unit in units],
+        [unit_dirs[unit.unit_id] / "stage6" for unit in units],
         merged_stage6,
         merge_jobs=args.global_merge_jobs,
         memory_kwargs=memory_kwargs,
@@ -907,9 +929,7 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
         "unit_count": len(units),
         "stage5_roots": [
             str(
-                output_root
-                / "units"
-                / unit.unit_id
+                unit_dirs[unit.unit_id]
                 / "stage456_sharded"
                 / "shards"
             )
@@ -919,6 +939,11 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
         "artifacts": final_artifacts,
         "runtime_gpu_ids": gpu_ids,
         "retention_policy": args.retention_policy,
+        "verified_unit_handoff": identity.get("verified_unit_handoff"),
+        "unit_sources": {unit.unit_id: {"path": str(unit_dirs[unit.unit_id]),
+            "source_revision": (identity["verified_unit_handoff"]["source_revision"]
+                                if unit.unit_id in reused_units else identity["source_revision"])}
+                         for unit in units},
     }
     _atomic_json(output_root / "summary.json", summary)
     _atomic_json(output_root / "COMPLETE.json", summary)
@@ -948,6 +973,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpus", default="auto")
     parser.add_argument("--resume", action="store_true",
                         help="Explicitly resume a planned pause; completed units are verified and reused.")
+    parser.add_argument("--reuse-verified-units", type=Path,
+                        help="Explicit smoke-verified handoff plan; original outputs stay read-only.")
     parser.add_argument("--input-shards-per-unit", type=int, default=10)
     parser.add_argument("--model", default=DEFAULT_STAGE3_MODEL)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_STAGE3_BATCH_SIZE)

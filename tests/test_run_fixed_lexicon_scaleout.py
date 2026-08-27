@@ -402,6 +402,19 @@ def test_pause_before_dispatch_does_not_remove_partial_unit(tmp_path, monkeypatc
                                settings=None, heartbeat_seconds=0.05, pause=control)
 
 
+def test_ordinary_resume_still_rejects_code_change(resumable_run, monkeypatch):
+    args, output = resumable_run
+    def pause(*a, **kw):
+        request_pause(output)
+        return True
+    monkeypatch.setattr(scaleout, "_run_units", pause)
+    scaleout.run(args)
+    args.resume = True
+    monkeypatch.setattr(scaleout, "source_revision", lambda _: "different-code")
+    with pytest.raises(RuntimeError, match="different immutable run identity"):
+        scaleout.run(args)
+
+
 def test_pause_during_final_merge_finishes_normally(resumable_run, monkeypatch):
     args, output = resumable_run
     merge = scaleout.merge_stage6_count_dirs
