@@ -11,6 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import run_t5_lexical_followup as followup
+from planned_pause import PauseControl, STATE_FILE, request_pause
+from incident_gate import guarded_entrypoint, RUN_TOKEN_ENV, STATE_DIR_ENV
 
 
 def save(path, value):
@@ -192,7 +194,7 @@ def test_full_chain_checks_smoke_before_formal(run_fixture, monkeypatch, tmp_pat
     calls = []
     monkeypatch.setattr(followup, "verify_pins", lambda config: None)
 
-    def step(item, config, report):
+    def step(item, config, report, pause=None):
         calls.append(item["name"])
         if item["name"] == "verify_smoke" and fail_smoke:
             raise ValueError("smoke mismatch")
@@ -234,3 +236,83 @@ def test_prepare_preserves_venv_python_path(run_fixture, monkeypatch, tmp_path):
     result = followup.read_json(followup.prepare(args))
     assert result["steps"][0]["argv"][0] == str(python.absolute())
     assert result["steps"][3]["argv"][0] == str(python.absolute())
+
+
+@pytest.mark.parametrize("gpus", ["0", "1,3", "0,1,2,3,4,5,6,7", "auto"])
+def test_restart_overrides_only_gpu_and_resume_without_mutating_config(gpus):
+    argv = ["python", "scaleout.py", "--gpus", "0,1", "--batch-size", "192",
+            "--input-shards-per-unit", "10", "--output-root", "/same/output"]
+    config = {"steps": [{"name": name, "argv": list(argv)} for name in
+                         ("lexical_smoke", "verify_lexical_resume", "lexical_formal")]}
+    before = json.dumps(config, sort_keys=True)
+    result = followup.execution_steps(config, gpus=gpus, resume=True)
+    for step in result:
+        assert step["argv"][3] == gpus
+        assert step["argv"][:3] + step["argv"][4:-1] == argv[:3] + argv[4:]
+        assert step["argv"][-1] == "--resume"
+    assert json.dumps(config, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("gpus", ["", "0,0", "0,", ",1"])
+def test_invalid_gpu_override_is_rejected(gpus):
+    with pytest.raises(ValueError, match="unique non-empty"):
+        followup.execution_steps({"steps": []}, gpus=gpus, resume=True)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_pause_forwards_to_real_child_and_does_not_mask_failure(tmp_path, fail):
+    queue_root, child_root = tmp_path / "queue", tmp_path / "child"
+    control = PauseControl.start(queue_root, "fixture")
+    request_pause(queue_root)
+    argv = [sys.executable, str(Path(__file__).parent / "fixtures/lexical_pause_child.py"),
+            "--output-root", str(child_root)]
+    if fail:
+        argv.append("--fail-after-pause")
+    events = []
+    expected = RuntimeError if fail else followup.PlannedPause
+    with pytest.raises(expected):
+        followup.run_step({"name": "lexical_formal", "argv": argv},
+                          {"queue_root": str(queue_root), "poll_seconds": 0.01},
+                          lambda state, **kw: events.append(state), pause=control)
+    assert "draining" in events
+    assert followup.read_json(child_root / STATE_FILE)["status"] == ("failed" if fail else "paused")
+
+
+def test_planned_pause_exits_without_incident_and_resume_keeps_gates(run_fixture, tmp_path, monkeypatch):
+    config, _, _ = run_fixture
+    queue_root = tmp_path / "queue"
+    config.update({"kind": followup.KIND, "queue_root": str(queue_root),
+                   "lexical_output": str(tmp_path / "lexical"),
+                   "steps": [{"name": "verify_smoke"}, {"name": "formal"}]})
+    path = save(tmp_path / "config.json", config)
+    pins = []
+    calls = []
+    request_on_pin = [True]
+
+    def verify_pins(config):
+        pins.append(True)
+        if request_on_pin:
+            request_on_pin.pop()
+            request_pause(queue_root)
+
+    monkeypatch.setattr(followup, "verify_pins", verify_pins)
+    monkeypatch.delenv(RUN_TOKEN_ENV, raising=False)
+    state_dir = tmp_path / "incident"
+    monkeypatch.setenv(STATE_DIR_ENV, str(state_dir))
+    assert guarded_entrypoint("fixture", lambda: followup.run(path)) == 0
+    assert followup.read_json(queue_root / "status.json")["state"] == "paused"
+    assert not (queue_root / "COMPLETE.json").exists()
+    assert not (state_dir / "incident.json").exists()
+    assert not (state_dir / "running.json").exists()
+
+    def step(item, config, report, pause=None):
+        calls.append(item["name"])
+        if item["name"] == "formal":
+            save(Path(config["lexical_output"]) / "COMPLETE.json", {"status": "completed", "input_rows": 2})
+
+    monkeypatch.setattr(followup, "run_step", step)
+    before = path.read_bytes()
+    assert guarded_entrypoint("fixture", lambda: followup.run(path, resume=True, gpus="0")) == 0
+    assert calls == ["verify_smoke", "formal"]
+    assert followup.read_json(queue_root / "status.json")["state"] == "completed"
+    assert path.read_bytes() == before

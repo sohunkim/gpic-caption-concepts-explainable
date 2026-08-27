@@ -967,6 +967,20 @@ frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
   verifies that no worker still owns it.
 - Available GPU count may differ between attempts. Remaining work units are
   assigned dynamically to the GPUs visible in the new attempt.
+- An explicit planned pause drains in-flight work units through receipt and
+  retention verification, then stops dispatching new units. It exits normally
+  with `paused`, without creating an incident or a final COMPLETE artifact.
+  Resume requires an explicit flag and the same immutable run identity;
+  only the runtime GPU selection may change. Input grouping, batch settings,
+  inventory, and extraction rules must not be changed by this control path.
+- Pause requests are bound to an execution attempt. Old requests cannot pause
+  a later resumed attempt. A crash, SIGTERM, OOM, failed receipt, or nonzero
+  child exit is still a failure even if a pause was requested concurrently.
+- The T5-to-lexical followup exposes the same planned pause and restart-only
+  GPU override. It forwards pause to a live lexical child, waits for safe
+  completion, and does not mutate its pinned config or stop the T5 producer.
+  Final global merge is not interrupted; a request during that merge waits
+  for completion. No in-flight GPU resizing is supported or required.
 - The outer scale-out entrypoint is incident-gated. Its child unit executions
   are covered by the parent gate and must not create independent repository
   incident markers.

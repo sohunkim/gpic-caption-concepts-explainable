@@ -25,6 +25,7 @@ for path in (SRC, SCRIPTS):
         sys.path.insert(0, str(path))
 
 from incident_gate import guarded_entrypoint
+from planned_pause import PauseControl, request_pause
 from gpic_concepts_v1.atomic_io import atomic_text_writer
 from gpic_concepts_v1.inventory_bundle import load_inventory_bundle
 from gpic_concepts_v1.stage3_annotate import (
@@ -150,9 +151,9 @@ def build_work_units(shards: list[InputShard], shards_per_unit: int) -> list[Wor
 
 def discover_gpu_ids(requested: str) -> list[str]:
     if requested != "auto":
-        values = [value.strip() for value in requested.split(",") if value.strip()]
-        if not values:
-            raise ValueError("--gpus must be auto or a comma-separated list")
+        values = [value.strip() for value in requested.split(",")]
+        if not all(values) or len(set(values)) != len(values):
+            raise ValueError("--gpus must be auto or a non-empty list of unique selectors")
         return values
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if visible and visible != "-1":
@@ -438,6 +439,7 @@ def _worker_main(
     task_queue: Any,
     event_queue: Any,
     settings: WorkerSettings,
+    pause: PauseControl | None = None,
 ) -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
     try:
@@ -446,7 +448,7 @@ def _worker_main(
         event_queue.put({"event": "ready", "gpu": gpu_id, "at": _utc_now()})
         while True:
             raw = task_queue.get()
-            if raw is None:
+            if raw is None or (pause is not None and pause.requested()):
                 break
             unit = WorkUnit(
                 unit_id=raw["unit_id"],
@@ -571,58 +573,67 @@ def _run_units(
     gpu_ids: list[str],
     settings: WorkerSettings,
     heartbeat_seconds: float,
-) -> None:
+    pause: PauseControl | None = None,
+) -> bool:
+    if pause is not None and pause.requested():
+        return True
     pending = [unit for unit in units if unit.unit_id not in completed]
     if not pending:
-        return
+        return False
     for unit in pending:
         _remove_incomplete_unit(output_root / "units" / unit.unit_id, output_root)
 
     context = mp.get_context("spawn")
     task_queue = context.Queue()
     event_queue = context.Queue()
-    for unit in pending:
-        task_queue.put(
-            {
-                "unit_id": unit.unit_id,
-                "rows": unit.rows,
-                "shards": [asdict(shard) for shard in unit.shards],
-            }
-        )
-    for _ in gpu_ids:
-        task_queue.put(None)
+    remaining = iter(pending)
+
+    def dispatch_next() -> None:
+        unit = None if pause is not None and pause.requested() else next(remaining, None)
+        task_queue.put(None if unit is None else {
+            "unit_id": unit.unit_id, "rows": unit.rows,
+            "shards": [asdict(shard) for shard in unit.shards],
+        })
+
+    def current_status() -> str:
+        if pause is not None and pause.requested():
+            pause.finish("draining")
+            return "draining"
+        return "running"
 
     workers = [
         context.Process(
             target=_worker_main,
-            args=(gpu_id, task_queue, event_queue, settings),
+            args=(gpu_id, task_queue, event_queue, settings, pause),
             name=f"fixedlex-gpu-{gpu_id}",
         )
         for gpu_id in gpu_ids
     ]
-    for worker in workers:
-        worker.start()
-
+    started_workers = []
     active: dict[str, str] = {}
     failure: dict[str, Any] | None = None
     workers_done: set[str] = set()
     started_at = _utc_now()
     try:
+        for worker in workers:
+            worker.start()
+            started_workers.append(worker)
         while len(workers_done) < len(workers):
             try:
                 event = event_queue.get(timeout=heartbeat_seconds)
             except queue.Empty:
                 dead = [
                     {"name": worker.name, "exitcode": worker.exitcode}
-                    for worker in workers
-                    if not worker.is_alive() and worker.exitcode not in {0, None}
+                    for gpu, worker in zip(gpu_ids, workers)
+                    if gpu not in workers_done and not worker.is_alive()
+                    and worker.exitcode is not None
                 ]
                 if dead:
                     failure = {"event": "worker_exit", "workers": dead, "at": _utc_now()}
                     break
                 _write_progress(
                     output_root,
-                    status="running",
+                    status=current_status(),
                     units=units,
                     completed=completed,
                     active=active,
@@ -631,11 +642,14 @@ def _run_units(
                 )
                 continue
             gpu = str(event.get("gpu") or "")
-            if event["event"] == "started":
+            if event["event"] == "ready":
+                dispatch_next()
+            elif event["event"] == "started":
                 active[gpu] = event["unit_id"]
             elif event["event"] == "completed":
                 completed.add(event["unit_id"])
                 active.pop(gpu, None)
+                dispatch_next()
             elif event["event"] == "failed":
                 failure = event
                 break
@@ -643,20 +657,30 @@ def _run_units(
                 workers_done.add(gpu)
             _write_progress(
                 output_root,
-                status="running",
+                status=current_status(),
                 units=units,
                 completed=completed,
                 active=active,
                 gpu_ids=gpu_ids,
                 started_at=started_at,
             )
+    except BaseException as exc:
+        failure = {"event": "supervisor_error", "error": str(exc), "at": _utc_now()}
+        raise
     finally:
         if failure is not None:
-            for worker in workers:
+            for worker in started_workers:
                 if worker.is_alive():
                     worker.terminate()
-        for worker in workers:
-            worker.join()
+        for worker in started_workers:
+            # Compute has ended (worker_done) or failed. Bound only process teardown.
+            worker.join(timeout=10)
+            if worker.is_alive():
+                failure = failure or {"event": "worker_teardown_failed", "worker": worker.name}
+                worker.kill()
+                worker.join(timeout=10)
+        task_queue.close()
+        event_queue.close()
 
     unexpected = [
         {"name": worker.name, "exitcode": worker.exitcode}
@@ -676,6 +700,7 @@ def _run_units(
             failure=details,
         )
         raise RuntimeError("fixed-lexicon scale-out worker failed: " + json.dumps(details))
+    return pause is not None and pause.requested()
 
 
 def _run_identity(
@@ -686,6 +711,8 @@ def _run_identity(
     inventory_fingerprint: dict[str, Any],
     preposition_mwe_lexicon: Path,
     model: str,
+    batch_size: int,
+    stage3_shards_per_gpu: int,
     revision: str,
     retention_policy: str,
 ) -> dict[str, Any]:
@@ -703,6 +730,8 @@ def _run_identity(
         "retention_policy": retention_policy,
         "semantic_settings": {
             "model": model,
+            "batch_size": batch_size,
+            "stage3_shards_per_gpu": stage3_shards_per_gpu,
             "stage3_disabled_components": list(DEFAULT_STAGE3_DISABLED_COMPONENTS),
             "stage6_facts_output_mode": "discard",
         },
@@ -737,6 +766,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         inventory_fingerprint=inventory_fingerprint,
         preposition_mwe_lexicon=preposition_mwe_lexicon,
         model=args.model,
+        batch_size=args.batch_size,
+        stage3_shards_per_gpu=args.stage3_shards_per_gpu,
         revision=revision,
         retention_policy=args.retention_policy,
     )
@@ -750,6 +781,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     else:
         _atomic_json(run_manifest_path, identity)
 
+    pause = PauseControl.start(
+        output_root, identity["identity_sha256"], resume=args.resume,
+    )
+    try:
+        result = _run_prepared(args, output_root, units, bundle, bundle_path,
+                               preposition_mwe_lexicon, identity, pause)
+        pause.finish(result["status"])
+        return result
+    except BaseException:
+        pause.finish("failed")
+        raise
+
+
+def _run_prepared(args, output_root, units, bundle, bundle_path,
+                  preposition_mwe_lexicon, identity, pause) -> dict[str, Any]:
     completed = {
         unit.unit_id
         for unit in units
@@ -757,7 +803,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             unit,
             output_root=output_root,
             run_identity_sha256=identity["identity_sha256"],
-            verify_hashes=args.verify_completed_hashes,
+            verify_hashes=args.verify_completed_hashes or args.resume,
             retention_policy=args.retention_policy,
         )
     }
@@ -769,7 +815,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not _artifacts_are_valid(
             complete.get("artifacts"),
             output_root=output_root,
-            verify_hashes=args.verify_completed_hashes,
+            verify_hashes=args.verify_completed_hashes or args.resume,
         ):
             raise RuntimeError("COMPLETE.json references missing or changed final artifacts")
         return complete
@@ -802,14 +848,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         gpu_ids=gpu_ids,
         started_at=_utc_now(),
     )
-    _run_units(
+    paused = _run_units(
         units,
         output_root=output_root,
         completed=completed,
         gpu_ids=gpu_ids,
         settings=settings,
         heartbeat_seconds=args.heartbeat_seconds,
+        pause=pause,
     )
+    if paused:
+        _write_progress(output_root, status="paused", units=units, completed=completed,
+                        active={}, gpu_ids=gpu_ids, started_at=_utc_now())
+        return {
+            "status": "paused", "identity_sha256": identity["identity_sha256"],
+            "completed_units": len(completed), "total_units": len(units),
+            "completed_rows": sum(unit.rows for unit in units if unit.unit_id in completed),
+            "runtime_gpu_ids": gpu_ids,
+        }
     if len(completed) != len(units):
         raise RuntimeError("not all fixed-lexicon units completed")
 
@@ -873,6 +929,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(ROOT / "resources" / "lexicons" / "preposition_mwes.tsv"),
     )
     parser.add_argument("--gpus", default="auto")
+    parser.add_argument("--resume", action="store_true",
+                        help="Explicitly resume a planned pause; completed units are verified and reused.")
     parser.add_argument("--input-shards-per-unit", type=int, default=10)
     parser.add_argument("--model", default=DEFAULT_STAGE3_MODEL)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_STAGE3_BATCH_SIZE)
@@ -921,4 +979,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(guarded_entrypoint("fixed_lexicon_scaleout", main))
+    if sys.argv[1:2] == ["pause"]:
+        control_parser = argparse.ArgumentParser(description="Drain current units, then pause.")
+        control_parser.add_argument("--output-root", type=Path, required=True)
+        control_args = control_parser.parse_args(sys.argv[2:])
+        print(json.dumps(request_pause(control_args.output_root.resolve()), sort_keys=True))
+    else:
+        raise SystemExit(guarded_entrypoint("fixed_lexicon_scaleout", main))

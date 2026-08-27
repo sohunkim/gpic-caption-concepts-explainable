@@ -30,6 +30,10 @@ from run_fixed_lexicon_scaleout import (
 import run_fixed_lexicon_scaleout as scaleout
 import run_mixed_caption_pipeline as mixed
 import run_stage3_sharded as stage3
+from planned_pause import PauseControl, STATE_FILE, request_pause
+
+sys.path.insert(0, str(ROOT / "tests" / "fixtures"))
+from lexical_scaleout_worker import worker as fixture_worker
 
 
 def _shard(index: int, path: Path) -> InputShard:
@@ -259,3 +263,164 @@ def test_scaleout_worker_preserves_gpu_selector_through_stage3_subprocess(tmp_pa
     tasks.put(None)
     scaleout._worker_main(gpu_id, tasks, events, settings)
     assert seen == [gpu_id]
+
+
+@pytest.fixture
+def resumable_run(tmp_path, monkeypatch):
+    shards = [_shard(i, tmp_path / f"input_{i}.jsonl") for i in range(11)]
+    manifest = tmp_path / "inputs.json"
+    manifest.write_text(json.dumps({"kind": "gpic-caption-shards-v1",
+                                   "shards": [shard.__dict__ for shard in shards]}))
+    prep = tmp_path / "prep.tsv"
+    prep.write_text("fixture\n")
+    bundle = SimpleNamespace(object_inventory=tmp_path / "object.tsv",
+                             attribute_inventory=tmp_path / "attribute.tsv",
+                             action_inventory=tmp_path / "action.tsv", lexicon_dir=tmp_path)
+    monkeypatch.setattr(scaleout, "inventory_bundle_fingerprint", lambda _: {"sha256": "fixed"})
+    monkeypatch.setattr(scaleout, "load_inventory_bundle", lambda _: bundle)
+    monkeypatch.setattr(scaleout, "source_revision", lambda _: "fixture-revision")
+    monkeypatch.setattr(scaleout, "_worker_main", fixture_worker)
+
+    def merge(roots, output, **kwargs):
+        output.mkdir()
+        rows = sorted(line for root in roots
+                      for line in (root / "objects.tsv").read_text().splitlines()[1:])
+        (output / "objects.tsv").write_text("id\tcount\n" + "\n".join(rows) + "\n")
+        return {"rows": len(rows)}
+
+    monkeypatch.setattr(scaleout, "merge_stage6_count_dirs", merge)
+    args = scaleout.build_parser().parse_args([
+        "--input-manifest", str(manifest), "--output-root", str(tmp_path / "run"),
+        "--inventory-bundle", str(tmp_path / "bundle.json"),
+        "--preposition-mwe-lexicon", str(prep), "--gpus", "0",
+        "--input-shards-per-unit", "1", "--heartbeat-seconds", "0.05",
+        "--retention-policy", "canonical_counts",
+    ])
+    output = Path(args.output_root)
+    output.mkdir()
+    return args, output
+
+
+def test_pause_resume_1_to_2_to_8_workers_keeps_receipts_and_result(resumable_run):
+    args, output = resumable_run
+    control = output / "fixture_control.json"
+    control.write_text(json.dumps({"pause": ["unit_000000"]}))
+    first = scaleout.run(args)
+    assert first["status"] == "paused" and first["completed_units"] == 1
+    assert not (output / "COMPLETE.json").exists()
+    assert not (output / "stage6").exists()
+    receipt = output / "receipts/unit_000000.json"
+    initial_receipt = receipt.read_bytes()
+    identity = (output / "run_manifest.json").read_bytes()
+    with pytest.raises(ValueError, match="explicit --resume"):
+        scaleout.run(args)
+
+    args.resume = True
+    args.gpus = "0,1"
+    control.write_text(json.dumps({"pause": ["unit_000001", "unit_000002"]}))
+    second = scaleout.run(args)
+    assert second["status"] == "paused"
+    assert 2 <= second["completed_units"] <= 3
+    assert receipt.read_bytes() == initial_receipt
+    assert (output / "run_manifest.json").read_bytes() == identity
+
+    args.gpus = "0,1,2,3,4,5,6,7"
+    control.write_text("{}")
+    result = scaleout.run(args)
+    assert result["status"] == "completed" and result["input_rows"] == 11
+    assert receipt.read_bytes() == initial_receipt
+    assert (output / "run_manifest.json").read_bytes() == identity
+    assert all(len(path.read_text().splitlines()) == 1 for path in output.glob("*.calls"))
+    assert len(list(output.glob("*.calls"))) == 11
+    assert len(list((output / "receipts").glob("*.json"))) == 11
+    merged = (output / "stage6/objects.tsv").read_bytes()
+
+    args.output_root = str(output.parent / "uninterrupted")
+    args.gpus = "0"
+    args.resume = False
+    scaleout.run(args)
+    assert (Path(args.output_root) / "stage6/objects.tsv").read_bytes() == merged
+
+
+def test_resume_checks_hashes_even_without_hash_flag(resumable_run):
+    args, output = resumable_run
+    control = output / "fixture_control.json"
+    control.write_text(json.dumps({"pause": ["unit_000000"]}))
+    scaleout.run(args)
+    artifact = output / "units/unit_000000/stage6/objects.tsv"
+    original = artifact.read_bytes()
+    artifact.write_bytes(original.replace(b"0\t1", b"0\t9"))
+    assert artifact.stat().st_size == len(original)
+    args.resume = True
+    assert not args.verify_completed_hashes
+    result = scaleout.run(args)
+    assert result["status"] == "paused"
+    assert artifact.read_bytes() == original
+    assert len((output / "unit_000000.calls").read_text().splitlines()) == 2
+
+
+def test_failure_during_drain_is_not_a_successful_pause(resumable_run):
+    args, output = resumable_run
+    (output / "fixture_control.json").write_text(json.dumps({
+        "pause": ["unit_000000"], "fail": ["unit_000000"],
+    }))
+    with pytest.raises(RuntimeError, match="worker failed"):
+        scaleout.run(args)
+    assert json.loads((output / STATE_FILE).read_text())["status"] == "failed"
+    assert not (output / "receipts/unit_000000.json").exists()
+    assert not (output / "COMPLETE.json").exists()
+
+
+@pytest.mark.parametrize("field,value", [("batch_size", 64), ("stage3_shards_per_gpu", 4),
+                                         ("input_shards_per_unit", 2)])
+def test_resume_rejects_changed_batch_or_grouping(resumable_run, field, value):
+    args, output = resumable_run
+    # Stop before dispatch without importing a GPU runtime.
+    def save_and_pause(*a, **kw):
+        request_pause(output)
+        return True
+    from unittest.mock import patch
+    with patch.object(scaleout, "_run_units", save_and_pause):
+        scaleout.run(args)
+    args.resume = True
+    setattr(args, field, value)
+    with pytest.raises(RuntimeError, match="different immutable run identity"):
+        scaleout.run(args)
+
+
+def test_pause_before_dispatch_does_not_remove_partial_unit(tmp_path, monkeypatch):
+    control = PauseControl.start(tmp_path, "fixture")
+    request_pause(tmp_path)
+    def unexpected(*a, **kw):
+        pytest.fail("must not delete or dispatch after an existing pause request")
+    monkeypatch.setattr(scaleout, "_remove_incomplete_unit", unexpected)
+    monkeypatch.setattr(scaleout.mp, "get_context", unexpected)
+    assert scaleout._run_units([], output_root=tmp_path, completed=set(), gpu_ids=["0"],
+                               settings=None, heartbeat_seconds=0.05, pause=control)
+
+
+def test_pause_during_final_merge_finishes_normally(resumable_run, monkeypatch):
+    args, output = resumable_run
+    merge = scaleout.merge_stage6_count_dirs
+    def pause_then_merge(*a, **kw):
+        request_pause(output)
+        return merge(*a, **kw)
+    monkeypatch.setattr(scaleout, "merge_stage6_count_dirs", pause_then_merge)
+    result = scaleout.run(args)
+    assert result["status"] == "completed"
+    assert json.loads((output / STATE_FILE).read_text())["status"] == "completed"
+    assert (output / "COMPLETE.json").is_file()
+
+
+def test_worker_exit_without_done_is_failure_not_infinite_wait(resumable_run):
+    args, output = resumable_run
+    (output / "fixture_control.json").write_text('{"exit_early": true}')
+    with pytest.raises(RuntimeError, match="worker failed"):
+        scaleout.run(args)
+    assert json.loads((output / STATE_FILE).read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("gpus", ["", "0,0", "0,", ",1"])
+def test_gpu_selector_rejects_duplicates_and_empty_tokens(gpus):
+    with pytest.raises(ValueError, match="unique selectors"):
+        scaleout.discover_gpu_ids(gpus)

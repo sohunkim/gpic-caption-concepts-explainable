@@ -15,9 +15,34 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "src"))
 from incident_gate import guarded_entrypoint
+from planned_pause import PauseControl, STATE_FILE, request_pause
 
 KIND = "gpic-t5-lexical-followup-v1"
+
+
+class PlannedPause(Exception):
+    """A cooperative stop, not a failed child or a forced termination."""
+
+
+def execution_steps(config: dict[str, Any], *, gpus: str | None, resume: bool) -> list[dict]:
+    steps = [{**step, "argv": list(step.get("argv", []))} for step in config["steps"]]
+    if gpus is not None and gpus != "auto":
+        values = [value.strip() for value in gpus.split(",")]
+        if not all(values) or len(set(values)) != len(values):
+            raise ValueError("GPU override requires unique non-empty selectors or auto")
+    for step in steps:
+        if step["name"] not in {"lexical_smoke", "verify_lexical_resume", "lexical_formal"}:
+            continue
+        argv = step["argv"]
+        if gpus is not None:
+            if argv.count("--gpus") != 1 or argv.index("--gpus") + 1 == len(argv):
+                raise ValueError("expected exactly one GPU option in lexical command")
+            argv[argv.index("--gpus") + 1] = gpus
+        if resume and "--resume" not in argv:
+            argv.append("--resume")
+    return steps
 
 
 def input_shards(path: Path) -> list[dict[str, Any]]:
@@ -210,20 +235,38 @@ def child_environment(config: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-def run_step(step: dict[str, Any], config: dict[str, Any], report) -> None:
+def run_step(step: dict[str, Any], config: dict[str, Any], report,
+             pause: PauseControl | None = None) -> None:
     log_path = Path(config["queue_root"]) / "logs" / f"{step['name']}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab", buffering=0) as log:
+        child_control = None
+        if step["name"] in {"lexical_smoke", "verify_lexical_resume", "lexical_formal"}:
+            argv = step["argv"]
+            child_control = Path(argv[argv.index("--output-root") + 1])
         process = subprocess.Popen(step["argv"], cwd=ROOT, env=child_environment(config),
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    start_new_session=os.name != "nt")
         try:
             while process.poll() is None:
-                report(step["name"], child_pid=process.pid, log=str(log_path),
+                draining = pause is not None and pause.requested()
+                if draining:
+                    pause.finish("draining")
+                    if child_control is not None and (child_control / STATE_FILE).exists():
+                        child_state = read_json(child_control / STATE_FILE)
+                        if (child_state.get("pid") == process.pid
+                                and child_state["status"] in {"running", "draining", "paused"}):
+                            request_pause(child_control, expected_attempt=child_state["attempt"])
+                report("draining" if draining else step["name"],
+                       step=step["name"], child_pid=process.pid, log=str(log_path),
                        child_progress=step.get("progress"))
                 time.sleep(config["poll_seconds"])
             if process.returncode != 0:
                 raise RuntimeError(f"{step['name']} exited {process.returncode}; see {log_path}")
+            if child_control is not None and (child_control / STATE_FILE).exists():
+                child_state = read_json(child_control / STATE_FILE)
+                if child_state.get("pid") == process.pid and child_state["status"] == "paused":
+                    raise PlannedPause()
         except BaseException:
             if process.poll() is None:
                 if os.name != "nt":
@@ -241,43 +284,61 @@ def run_step(step: dict[str, Any], config: dict[str, Any], report) -> None:
             raise
 
 
-def run(config_path: Path) -> None:
+def run(config_path: Path, *, gpus: str | None = None, resume: bool = False) -> None:
     config = read_json(config_path)
     if config.get("kind") != KIND:
         raise ValueError("unsupported followup config")
     root = Path(config["queue_root"])
+    steps = execution_steps(config, gpus=gpus, resume=resume)
+    pause = PauseControl.start(root, digest_file(config_path), resume=resume)
     started = datetime.now(timezone.utc).isoformat()
 
     def report(state: str, **details) -> None:
         value = {"kind": KIND, "state": state, "pid": os.getpid(),
                  "started_at": started, "updated_at": datetime.now(timezone.utc).isoformat(),
-                 "config_sha256": digest_file(config_path), **details}
+                 "config_sha256": digest_file(config_path), "attempt": pause.attempt,
+                 "gpu_override": gpus, "resume": resume, **details}
         write_json(root / "status.json", value)
         with (root / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(value, sort_keys=True) + "\n")
         print(json.dumps(value, sort_keys=True), flush=True)
 
+    def check_pause() -> None:
+        if pause.requested():
+            raise PlannedPause()
+
+    def verification_progress(state, **details):
+        check_pause()
+        report(state, **details)
+
     try:
         verify_pins(config)
         while True:
+            check_pause()
             complete, progress = t5_state(config)
             if complete:
                 break
             report("waiting_for_t5", completed_shards=progress["completed_shards"],
                    total_shards=progress["total_shards"], t5_progress=progress["updated_at"])
             time.sleep(config["poll_seconds"])
-        result = verify_t5(config, report)
+        result = verify_t5(config, verification_progress)
         write_json(root / "t5_verification.json", result)
         verify_pins(config)
-        for step in config["steps"]:
-            run_step(step, config, report)
+        for step in steps:
+            check_pause()
+            run_step(step, config, report, pause=pause)
         result = read_json(Path(config["lexical_output"]) / "COMPLETE.json")
         if result.get("status") != "completed" or result.get("input_rows") != config["expected_rows"]:
             raise ValueError("lexical COMPLETE population/status mismatch")
         verify_pins(config)
+        pause.finish("completed")
         report("completed", rows=result["input_rows"], lexical_output=config["lexical_output"])
         write_json(root / "COMPLETE.json", read_json(root / "status.json"))
+    except PlannedPause:
+        pause.finish("paused")
+        report("paused")
     except BaseException as exc:
+        pause.finish("failed")
         report("failed", error=f"{type(exc).__name__}: {exc}")
         raise
 
@@ -352,14 +413,26 @@ def main() -> None:
     setup.add_argument("--cuda-library-root")
     execute = commands.add_parser("run")
     execute.add_argument("--config", type=Path, required=True)
+    execute.add_argument("--gpus", help="Restart-only GPU override; leaves the pinned config unchanged.")
+    execute.add_argument("--resume", action="store_true")
+    stop_parser = commands.add_parser("pause")
+    stop_parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     if args.mode == "prepare":
         print(prepare(args))
+    elif args.mode == "pause":
+        config = read_json(args.config)
+        control_root = Path(config["queue_root"])
+        state = read_json(control_root / STATE_FILE)
+        if state["identity"] != digest_file(args.config):
+            raise ValueError("pause config does not match the running followup")
+        print(json.dumps(request_pause(control_root), sort_keys=True))
     else:
         def stop(signum, frame):
             raise KeyboardInterrupt(f"received signal {signum}")
         signal.signal(signal.SIGTERM, stop)
-        raise SystemExit(guarded_entrypoint("t5_lexical_followup", lambda: run(args.config)))
+        raise SystemExit(guarded_entrypoint("t5_lexical_followup", lambda: run(
+            args.config, gpus=args.gpus, resume=args.resume)))
 
 
 if __name__ == "__main__":

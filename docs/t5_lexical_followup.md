@@ -41,3 +41,36 @@ locator if T5 itself has not completed yet. Never silently mutate a config.
 Data remains on MLXP NVMe. Publishing large artifacts to DDN is a separate
 capacity-checked operation; this handoff does not touch shared training data,
 start Full/100M, update inventory, or create HTML.
+
+## Planned Pause And GPU Changes On Restart
+
+`--resume` always verifies completed artifact SHA256, even without the optional
+hash-verification flag. Batch size and per-GPU Stage 3 shard grouping are pinned
+alongside the input unit boundaries and inventory; GPU selectors remain runtime
+settings. A missing or changed receipt is never reused as a completed unit.
+
+Request a pause with `run_t5_lexical_followup.py pause --config <config.json>`.
+This returns after recording the request, not after GPU work has stopped.
+Wait for `status.json` to say `paused` and the supervisor to exit before
+releasing the pod. Active lexical units finish Stage 1-6, verification, and
+retention first; no partial unit is accepted. The current formal unit size is
+10 input shards (normally 500,000 captions), so draining is not instantaneous.
+During the final global merge the job finishes instead of killing the merger.
+
+Restart with the same config and output paths:
+`run_t5_lexical_followup.py run --config <config.json> --resume --gpus 0,1,2,3`.
+`--gpus auto` discovers the new attempt's visible GPUs. The override changes
+only child GPU selection; it is recorded in runtime status/events, not written
+back into the immutable config. GPU count may change from 1 through 8 between
+attempts. Batch size, input work units, code revision, and inventory stay fixed.
+The existing T5 verification, locked 100-caption equality check, and receipt
+resume checks still run before the formal child resumes completed units.
+
+Standalone scale-out uses `run_fixed_lexicon_scaleout.py pause --output-root
+<output>` and the original run arguments plus `--resume --gpus <new-list>`.
+Both controllers use attempt-bound atomic request files. A planned pause is a
+normal exit and does not clear or create an incident; real errors and forced
+termination retain the incident policy. There is no automatic error retry.
+
+These controls require the pause-capable code from the start of a run. Do not
+hot-update a running checkout or rewrite an old run's identity to adopt them.

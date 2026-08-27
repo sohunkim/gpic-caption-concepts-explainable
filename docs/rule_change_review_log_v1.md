@@ -7300,3 +7300,36 @@ Decision status:
 
 - Approved by the user on 2026-08-25 as part of the resumed 10M fixed-lexicon
   rollout, with large data remaining entirely on MLXP storage.
+
+## 2026-08-28: Planned Pause And Restart-Only GPU Selection
+
+- Approval: user requested pause/restart with a different GPU count, explicitly
+  not live GPU resizing, on 2026-08-27.
+- Scope: R28 orchestration of fixed-lexicon Stage 1-6 and the T5 followup.
+  No linguistic rule, inventory, canonicalization, count definition, or T5
+  producer changes. Expected count delta is zero for the same pinned inputs.
+- Prior gap: completed-unit receipt reuse existed, but there was no cooperative
+  pause protocol. The followup's GPU selection lived in an immutable config,
+  encouraging config edits instead of a runtime-only override.
+- Implementation: attempt-bound atomic pause request, drain active units through
+  receipt/retention verification, explicit resume, and command-time GPU override.
+  Input boundaries, code, inventory, batch size and Stage 3 grouping stay pinned;
+  resume always hashes completed artifacts. Old requests cannot stop a new
+  attempt. No COMPLETE marker is emitted for a paused partial run.
+- Failure handling: nonzero/missing worker completion, failed verification, OOM
+  and forced termination remain incidents. Partial process-start failures clean
+  up already-started workers. Teardown has a bounded wait only after compute
+  has ended or failed; healthy computation has no elapsed-time kill.
+- Risk/limitation: pause drains a whole work unit, not one caption. Global merge
+  completes if already started. This feature must be present at run startup;
+  do not hot-update the active 10M checkout or relabel its source identity.
+- Reversibility: existing outputs and inventory are untouched. The previously
+  pinned running checkout continues independently of this code change.
+- Local verification: bounded pytest over `test_planned_pause`,
+  `test_run_fixed_lexicon_scaleout`, `test_run_t5_lexical_followup`,
+  `test_verify_fixed_lexicon_retention_smoke`, `test_stage3_sharded`, and
+  `test_incident_gate`: **99 passed in 73.45s**, timeout ceiling 240s.
+  Real CPU subprocess fixtures test 1 -> 2 -> 8 workers, receipt preservation,
+  identical final fixture count bytes, corrupted-file recomputation, stale pause
+  requests, merge-time pause, and failure during drain. These are scheduler/
+  lifecycle tests, not a claim of new eight-GPU inference equivalence.
