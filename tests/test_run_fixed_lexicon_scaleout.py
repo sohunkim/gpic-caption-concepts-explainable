@@ -4,6 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import os
+from queue import Queue
+from types import SimpleNamespace
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -22,6 +27,9 @@ from run_fixed_lexicon_scaleout import (
     load_input_manifest,
     unit_receipt_is_valid,
 )
+import run_fixed_lexicon_scaleout as scaleout
+import run_mixed_caption_pipeline as mixed
+import run_stage3_sharded as stage3
 
 
 def _shard(index: int, path: Path) -> InputShard:
@@ -209,3 +217,45 @@ def test_final_artifact_manifest_rejects_missing_changed_and_escaped_files(
 
     records[0]["path"] = "../outside.tsv"
     assert not _artifacts_are_valid(records, output_root=tmp_path, verify_hashes=False)
+
+
+@pytest.mark.parametrize("gpu_id", ["0", "1", "3", "GPU-fixture-device"])
+def test_scaleout_worker_preserves_gpu_selector_through_stage3_subprocess(tmp_path, monkeypatch, gpu_id):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    seen = []
+    summary = tmp_path / "worker_summary.jsonl"
+    summary.write_text('{"total": 1}\n', encoding="utf-8")
+
+    def run_stage3_subprocess(command, **kwargs):
+        seen.append(kwargs["env"]["CUDA_VISIBLE_DEVICES"])
+        return SimpleNamespace(returncode=0)
+
+    def run_mixed(**kwargs):
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == gpu_id
+        shard = stage3.Stage3Shard(
+            caption_shape="sentence", shard_index=0, input_path=tmp_path / "input.jsonl",
+            output_path=tmp_path / "records.jsonl", summary_path=summary,
+            progress_path=tmp_path / "progress.json", stdout_path=tmp_path / "stdout.log",
+            stderr_path=tmp_path / "stderr.log", row_count=1,
+            gpu_device=kwargs["stage3_gpu_devices"][0])
+        stage3.run_one_stage3_shard(shard, model="fixture", batch_size=192,
+                                   gpu_mode="require", progress_interval_records=10,
+                                   disabled_components=())
+
+    monkeypatch.setattr(mixed, "run_mixed_caption_pipeline", run_mixed)
+    monkeypatch.setattr(stage3.subprocess, "run", run_stage3_subprocess)
+    monkeypatch.setattr(scaleout, "build_unit_receipt", lambda *a, **kw:
+                        {"artifacts": [], "elapsed_seconds": 0})
+    monkeypatch.setattr(scaleout, "_artifacts_are_valid", lambda *a, **kw: True)
+    monkeypatch.setattr(scaleout, "apply_unit_retention", lambda *a, **kw: {})
+    settings = SimpleNamespace(
+        output_root=str(tmp_path), object_inventory="object.tsv", attribute_inventory="attribute.tsv",
+        action_inventory="action.tsv", preposition_mwe_lexicon="prep.tsv", lexicon_dir="lexicons",
+        model="fixture", batch_size=192, progress_interval_records=10, stage3_shards_per_gpu=8,
+        stage456_shards_per_worker=7, stage456_jobs_per_worker=7, stage456_merge_jobs=8,
+        stage6_count_backend="sqlite", run_identity_sha256="a" * 64, retention_policy="canonical_counts")
+    tasks, events = Queue(), Queue()
+    tasks.put({"unit_id": "unit_000000", "rows": 1, "shards": []})
+    tasks.put(None)
+    scaleout._worker_main(gpu_id, tasks, events, settings)
+    assert seen == [gpu_id]

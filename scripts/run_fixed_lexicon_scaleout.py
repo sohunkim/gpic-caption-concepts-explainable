@@ -475,7 +475,8 @@ def _worker_main(
                 stage3_sentence_shards=settings.stage3_shards_per_gpu,
                 stage3_tag_shards=settings.stage3_shards_per_gpu,
                 stage3_jobs=settings.stage3_shards_per_gpu,
-                stage3_gpu_devices=["0"],
+                # Stage 3 writes a new visibility mask, not a parent-local ordinal.
+                stage3_gpu_devices=[gpu_id],
                 max_monolithic_stage456_captions=0,
                 stage456_shards=settings.stage456_shards_per_worker,
                 stage456_jobs=settings.stage456_jobs_per_worker,

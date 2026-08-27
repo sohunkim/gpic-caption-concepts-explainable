@@ -1838,3 +1838,34 @@ failures could mix true setup problems with probe-only environment differences.
   the existing incident with this cause, correction, and verification evidence.
 - The T5 output and failed followup config remain untouched. No T5 inference
   or inventory build is needed for recovery.
+
+# 2026-08-27: Nested Stage 3 Overwrote The Scale-Out GPU Selector
+
+## Root cause and impact
+
+- During the first full lexical work-unit startup, live `nvidia-smi` showed
+  all 16 Stage 3 processes on one GPU UUID, with the other H200 unused.
+- The scale-out worker set `CUDA_VISIBLE_DEVICES` to its assigned GPU, but
+  passed `stage3_gpu_devices=["0"]` into the mixed runner. Stage 3 constructs
+  a fresh subprocess environment and writes that supplied selector into
+  `CUDA_VISIBLE_DEVICES`, so both outer workers' children selected device 0.
+- Logical device 0 inside a process is not the external selector written to
+  a new subprocess's visibility mask. The scheduler's active GPU labels alone
+  did not demonstrate actual GPU placement.
+- The just-started lexical attempt was deliberately stopped via its supervisor;
+  all of its GPU child processes exited. Completed T5 data was not changed.
+
+## Durable correction and verification
+
+- Propagate the assigned GPU selector unchanged through the mixed runner into
+  Stage 3. This also supports nonconsecutive numeric selectors and GPU UUIDs.
+- Add an integrated worker-to-Stage-3-subprocess test that observes the final
+  subprocess environment for selectors 0, 1, 3, and a UUID. It reproduced the
+  bug on every nonzero selector before the correction.
+- The existing extraction batch/grouping configuration remains unchanged.
+- Local bounded regression run: `tests/test_run_t5_lexical_followup.py`,
+  `tests/test_run_fixed_lexicon_scaleout.py`,
+  `tests/test_verify_fixed_lexicon_retention_smoke.py`, and
+  `tests/test_stage3_sharded.py`: 50 passed in 7.31 seconds.
+- Before accepting recovery, run the locked 100-caption equality test again
+  and check actual process placement on both GPU UUIDs during the full run.

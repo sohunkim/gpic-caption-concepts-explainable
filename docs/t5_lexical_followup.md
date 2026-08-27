@@ -26,6 +26,8 @@ no extraction rule, inventory row, canonicalizer, or count definition changes.
 6. Keep the inventory frozen. Use SQLite counting and `canonical_counts`
    retention: verified Stage 5 records and count tables remain; regenerable
    intermediate files are pruned by the existing retention implementation.
+   A worker's assigned external GPU selector must reach the Stage 3 child
+   unchanged. Verify actual CUDA process placement, not only scheduler labels.
 
 All child stdout/stderr goes to per-step log files. Phase history is retained in
 `events.jsonl`. `status.json` is atomically
