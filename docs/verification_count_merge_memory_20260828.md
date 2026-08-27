@@ -69,6 +69,47 @@ bounded tests on Linux from an exact Git commit in an isolated checkout.
   `memory.current=196433092608`, `memory.max=515396075520`, and all OOM counters
   zero. That run still uses the old pinned code, not this correction.
 
+## MLXP Verification
+
+- Code commit: `8af6ecd5245367e525e16cde8191d552781287f4`, fetched from GitHub
+  into `/mnt/nvme/gpic-scaleout/repos/lexical-memory-8af6ecd`. Exact commit and
+  clean worktree checks passed before and after testing. The live checkout was
+  separately verified clean at its original `bd83c796...` commit.
+- The same 158 regressions passed in 46.86 seconds. Three existing PyTorch
+  model-loading FutureWarnings were emitted; no GPU inference was added.
+- The unchanged 100,000-key RSS probe completed in 2.802 seconds, with 58
+  spills, 21,643 maximum cached keys, and a measured peak RSS of 51,216 KiB
+  below its 55,308-KiB assigned budget. Its complete output digest matches
+  Windows. Report: the isolated checkout's
+  `reports/count_merge_memory_linux_20260828.json`.
+
+### Real Completed-Unit Comparison
+
+Read only the object/attribute tables from completed `unit_000000` and
+`unit_000001` under `/mnt/nvme/gpic-scaleout/lexical-lite10m-followup-bd83c79/units`.
+These units cover 1,000,000 captions; no caption parsing was rerun. Their four
+input files total 24,518,837 bytes. Baseline and new mergers ran as separate CPU
+processes. The new merger received its measured starting RSS plus 32 MiB per
+table to deliberately force spilling. Source hashes matched before and after.
+
+| Table | Output rows | Count sum | Baseline seconds | Spill seconds | Spills |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| object_counts.tsv | 30,754 | 10,269,594 | 0.832 | 1.885 | 68 |
+| attribute_counts.tsv | 38,894 | 5,954,962 | 0.775 | 1.895 | 66 |
+
+- Both complete TSVs are byte-identical, including caption counts, evidence,
+  ordering and example IDs. Object SHA256:
+  `d6488a751c4dba12848c7172e5f8dd07e936345c823e627be52270c258cfe41d`.
+  Attribute SHA256:
+  `7d8201482c669b9f4ec59a033d88c5fc0ba5bdbbf36efa5f9c63bb2d96bf25a6`.
+- Baseline process peak RSS: 644,588 KiB; new process peak: 574,180 KiB.
+  These include module imports and diagnostic hashing. This deliberately small
+  spill budget is not a production speed benchmark or a full 10M memory claim.
+- Per-file input hashes, results and output TSVs are under
+  `/mnt/nvme/gpic-scaleout/memory-verification-8af6ecd/{baseline,bounded}`.
+- Other count tables, including pair/triple tables, were exercised by forced
+  spill fixtures, not by this two-table real-data comparison.
+
 ## Deployment Boundary
 
 The running 10M checkout is pinned at
