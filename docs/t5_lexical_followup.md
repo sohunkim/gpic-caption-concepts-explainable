@@ -20,6 +20,9 @@ no extraction rule, inventory row, canonicalizer, or count definition changes.
 5. Run the existing 100-caption lexical smoke, compare all Stage 5 canonical
    mentions/edges and Stage 6 TSVs against the locked baseline, and verify
    receipt-based resume. Only then run the complete identical input manifest.
+   Stage 5 equality is the row multiset (row count and canonical content SHA),
+   independent of shard/file counts or file/row ordering. Physical file counts
+   remain in both sides of the audit; receipt file/size/SHA checks remain strict.
 6. Keep the inventory frozen. Use SQLite counting and `canonical_counts`
    retention: verified Stage 5 records and count tables remain; regenerable
    intermediate files are pruned by the existing retention implementation.

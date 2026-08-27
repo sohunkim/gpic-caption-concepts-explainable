@@ -1807,3 +1807,34 @@ failures could mix true setup problems with probe-only environment differences.
   `451 passed, 1 warning in 85.69s`.
 - Full MLXP Linux regression remains required for the final commit before the
   retention smoke is accepted.
+
+# 2026-08-27: Equal Lexical Smoke Rejected For Different File Counts
+
+## Root cause and impact
+
+- T5 Lite completed all 9,975,391 rows and passed receipt, file SHA, row count,
+  caption-ID order, and grouping fingerprint verification.
+- The followup stopped at 20:00 KST in `verify_fixed_lexicon_retention_smoke`.
+  Its Stage 5 digest dictionaries mixed semantic fields (`rows`, `sha256`)
+  with a physical-layout field (`files`), and compared whole dictionaries.
+- Baseline had 4 Stage 5 files per artifact type; the current worker layout
+  produced 14. Both had exactly 1,912 mentions and 1,192 edges, with identical
+  canonical content SHA256 for each type. No extraction change was observed.
+- Existing tests used the same partition layout on both sides, so they did not
+  exercise the hardware/worker-dependent layout allowed by the scale-out rule.
+- The incident gate correctly stopped the chain, but the verifier's false
+  rejection left lexical 10M unstarted and GPUs idle until the user returned.
+
+## Durable correction
+
+- Compare only the row multiset identity (row count and canonical content SHA)
+  for Stage 5 equivalence; retain both physical file counts as audit metadata.
+- Keep every retained artifact's per-file SHA/size verification and global
+  Stage 6 TSV comparison unchanged. This is not an exception for 4 or 14 files.
+- Add partition-count fixtures (2, 4, 14), empty partitions, duplicate/missing
+  rows, same-row-count content changes, Stage 6 changes, and corrupt receipts.
+- The new tests reproduced the old failure before the verifier was changed.
+  Deploy only after local/Linux tests and the actual failed smoke pass; clear
+  the existing incident with this cause, correction, and verification evidence.
+- The T5 output and failed followup config remain untouched. No T5 inference
+  or inventory build is needed for recovery.

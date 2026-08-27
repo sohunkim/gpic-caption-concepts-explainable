@@ -145,7 +145,12 @@ def verify(baseline: Path, candidate: Path, *, retention_policy: str) -> dict[st
         name: _stage5_digest(candidate, name)
         for name in ("canonical_mentions.jsonl", "canonical_edges.jsonl")
     }
-    if candidate_stage5 != baseline_stage5:
+    # File counts describe worker partitioning, not the extracted row multiset.
+    if any(
+        (candidate_stage5[name]["rows"], candidate_stage5[name]["sha256"])
+        != (baseline_stage5[name]["rows"], baseline_stage5[name]["sha256"])
+        for name in baseline_stage5
+    ):
         raise ValueError(
             "Stage 5 canonical artifacts differ: "
             + json.dumps(
@@ -166,6 +171,7 @@ def verify(baseline: Path, candidate: Path, *, retention_policy: str) -> dict[st
         "candidate": str(candidate.resolve()),
         "retention": _verify_retention(candidate, retention_policy),
         "stage5": candidate_stage5,
+        "stage5_baseline": baseline_stage5,
         "stage6": {"files": len(candidate_stage6), "artifacts": candidate_stage6},
     }
 
