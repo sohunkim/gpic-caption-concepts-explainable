@@ -92,3 +92,26 @@ A 20-second local WSL echo probe also timed out. These were not inference
 failures. No WSL-wide restart, production retry, or production termination was
 performed. At this checkpoint the full result JSON remains on MLXP and a
 post-verification production status refresh is not yet confirmed.
+
+## Follow-Up After WSL Recovery
+
+After the user restored WSL, a bounded echo probe and MLXP metadata reads
+succeeded. The completed GPU smoke was not rerun. Its two small evidence
+files were retrieved locally and checked against remote SHA256 values:
+
+| Local file under `reports/` | Bytes | SHA256 |
+|---|---:|---|
+| `real_gpu_restart_smoke100_20260828.json` | 14,032 | `15515e4fc121d9c3f69075a3ec052fbd9bdc3f1f3a8984e3b053b7734cc2d06d` |
+| `real_gpu_restart_smoke100_20260828_conditions.json` | 6,506 | `6c35f083cfa71e15cf08da780f5646f0a921d222b06fd85dae1a41fa18c1ea1a` |
+
+The retrieved result confirms `status=ok`, 100 captions, 1,912 canonical
+mentions, 1,192 canonical edges, and equality of all 10 Stage 6 TSVs. The final
+one-GPU resume reused 72 files from the three completed units. No caption
+payload or large dataset artifact was transferred through the desktop.
+
+Production progress at 01:18:46 KST: 4,000,000 / 9,975,391 captions complete
+(40.1%), 8 / 20 units complete, units 8 and 9 active on GPUs 0 and 1. The same
+supervisor PID 22196 and lexical child PID 30432 were still alive. Cgroup memory
+was about 126.3 / 480 GiB, with `oom=0` and `oom_kill=0`. The prior WSL failure
+did not stop or restart these processes. No production code, input, inventory,
+or output was changed during recovery verification.
