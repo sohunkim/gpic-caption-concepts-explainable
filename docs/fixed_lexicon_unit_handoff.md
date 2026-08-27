@@ -68,3 +68,71 @@ receipts are run-specific generated evidence, not implied by these fixtures.
 
 Related merge-memory/followup/retention/pause regressions: **59 passed in
 25.47s**, also with a 240s ceiling. Total local acceptance: 106 tests.
+
+## MLXP Deployment, 2026-08-28
+
+This is a startup verification snapshot, not a claim that the full Lite run
+or its final global merge has finished.
+
+- Source code: `bd83c796ee654ea8bc584ca7361c5f8d3adde786`.
+- New code: `012c6b2feae10879305e59759370a62adfc9cb8c`, pushed to GitHub and
+  checked out cleanly at `/mnt/nvme/gpic-scaleout/repos/lexical-handoff-012c6b2`.
+- Pod: `prod-rsv-snu14ksh-20260827-78e36c`, two H200 GPUs, 480 GiB cgroup limit.
+- Interpreter: `/mnt/ddn/prod-runs/snu14ksh/gpic-linux-env/bin/python`.
+- Linux acceptance: the same six test modules, **106 passed in 40.13s**.
+- Same-input 100-caption old/new smoke: Stage 5 canonical row multisets match
+  exactly (1,912 mentions; 1,192 edges); all ten Stage 6 TSVs are byte-identical.
+  Model `en_core_web_trf`, batch 192, eight sentence/tag shards per GPU,
+  disabled NER, two GPUs and `canonical_counts` retention were unchanged.
+  The new smoke is `/mnt/nvme/gpic-scaleout/lexical-smoke100-handoff-012c6b2`;
+  its verification is the new checkout's
+  `reports/handoff_smoke_verification.json`.
+
+The user approved stopping the legacy job and recomputing incomplete units.
+The exact legacy supervisor/child process tree was verified and terminated.
+All **16 completed units / 8,000,000 captions** retained their original receipt
+hashes; every retained artifact passed SHA verification. Incomplete units 16
+and 17 were not imported. They are recomputed in the new root alongside the
+remaining units 18 and 19: **1,975,391 captions** remain to finish.
+
+| Purpose | Location |
+|---|---|
+| Read-only source units | `/mnt/nvme/gpic-scaleout/lexical-lite10m-followup-bd83c79` |
+| New output | `/mnt/nvme/gpic-scaleout/lexical-lite10m-memory-012c6b2` |
+| Control/evidence directory | `/mnt/ddn/prod-runs/snu14ksh/gpic-scaleout/lite-official-v1/handoff-012c6b2-20260828` |
+
+The control directory contains `legacy_stop.json`, `handoff.json`, `launch.json`,
+`job.json`, `stdout.log`, `stderr.log` and `live_verification.json`.
+The frozen handoff SHA-256 is
+`507bea797024a03a195f7834177ef5ef228e0fb4b0ae3703afab0445b0956fe4`.
+The intentional SIGTERM incident `30abfb6b350344598296e1ee85d18928` was resolved
+only after the stop receipt, tests, smoke equality and source hash checks;
+its history remains recorded. It was not a cooperative legacy pause.
+
+The replacement was launched with `run_background_job.py`, with the actual
+detached child wrapped by `incident_gate.py`. Guard PID 139465 and child PID
+139466 were live at **2026-08-28 03:19 KST**. It does not depend on the desktop
+staying open. No elapsed-time timeout is attached to healthy formal work.
+The recorded launch command preserves the old semantic arguments and adds
+the new output root and `--reuse-verified-units` plan. T5 was not restarted.
+
+At that snapshot, `progress.json` reported 8,000,000 completed rows, with units
+16 and 17 active on GPUs 0 and 1. Stage 3 shard progress reported actual
+`gpu_enabled=true`, `gpu_mode=require` and increasing annotation totals.
+The hardware-derived process-tree budget is divided across both unit workers
+(179.73 GiB each), then across each unit's eight concurrent Stage 3 workers
+(about 22.39 GiB each). Stage 4/5/6 and merge children use the same budget
+propagation; the final production merge had not yet run at this snapshot.
+Its adaptive SQLite-spill regression is documented in
+`verification_count_merge_memory_20260828.md`.
+
+Cgroup memory was 268.81 GiB, including 254.21 GiB of file cache and 13.86 GiB
+of anonymous memory. GPU memory was 56,996 and 50,026 MiB of 143,771 MiB per
+GPU. Cgroup `max`, `oom` and `oom_kill` counters were all zero; stderr was empty.
+These are measurements, not a promise that all future allocations fit.
+
+For later planned pauses, use the new revision's
+`run_fixed_lexicon_scaleout.py pause --output-root NEW_OUTPUT`, wait for
+`paused`, then resume with the recorded launch arguments plus `--resume`.
+Only runtime GPU selection may change. Keep the handoff plan and both data
+roots; do not edit the active code checkout or delete the reused source root.
