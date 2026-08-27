@@ -22,14 +22,22 @@ def source(tmp_path, rows):
     return manifest
 
 
-def test_preparation_preserves_order_and_all_row_markers(tmp_path):
-    rows = [{"caption_id": str(i), "caption": "A blue car.", "global_index": i,
+@pytest.mark.parametrize("id_field", ["caption_id", "key", "id"])
+def test_preparation_preserves_order_and_all_row_markers(tmp_path, id_field):
+    rows = [{id_field: str(i), "caption": "A blue car.", "global_index": i,
              "parent_global_index": i * 2} for i in range(8)]
     manifest = prepare_input(source(tmp_path, rows), tmp_path / "prepared", rows=8)
     shards = json.loads(manifest.read_text())["shards"]
     actual = [json.loads(line) for shard in shards for line in Path(shard["path"]).read_text().splitlines()]
     assert actual == rows
     assert [s["rows"] for s in shards] == [2, 2, 2, 2]
+
+
+def test_preparation_uses_pipeline_conflicting_id_gate(tmp_path):
+    rows = [{"id": str(i), "caption_id": "conflicting"} for i in range(4)]
+    with pytest.raises(ValueError, match="conflicting caption identifiers"):
+        prepare_input(source(tmp_path, rows), tmp_path / "prepared", rows=4)
+    assert not (tmp_path / "prepared").exists()
 
 
 @pytest.mark.parametrize("ids", [["a", "a", "b", "c"], ["a", "", "b", "c"]])

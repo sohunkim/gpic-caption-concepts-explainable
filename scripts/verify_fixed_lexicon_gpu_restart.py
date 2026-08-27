@@ -18,6 +18,7 @@ from run_fixed_lexicon_scaleout import (
     load_input_manifest, source_revision, verify_input_shards,
 )
 from incident_gate import guarded_entrypoint
+from gpic_concepts_v1.stage1 import caption_id_from_gpic_row
 from planned_pause import request_pause
 from run_t5_lexical_followup import child_environment
 from verify_fixed_lexicon_retention_smoke import verify
@@ -40,10 +41,7 @@ def prepare_input(source: Path, destination: Path, *, rows: int) -> Path:
             raise ValueError("input row count differs from manifest")
         for line in content:
             row = json.loads(line)
-            caption_id = str(row.get("caption_id") or "")
-            if not caption_id:
-                raise ValueError("smoke row has no caption_id")
-            ids.append(caption_id)
+            ids.append(caption_id_from_gpic_row(row))
             lines.append(line.rstrip(b"\r\n") + b"\n")
     if len(set(ids)) != rows:
         raise ValueError("smoke caption IDs are not unique")

@@ -99,3 +99,11 @@ check memory headroom first and use a separate clean checkout and output root.
 The explicit 900-second per-attempt deadline is for this bounded diagnostic
 only, never a production runtime limit. Failure stops its own process session,
 records evidence, and remains incident-gated without retrying production.
+
+The smoke input preflight uses Stage 1's `caption_id_from_gpic_row` for all
+supported `id`/`key`/`caption_id` schemas and the same conflicting-ID rejection.
+The initial real-GPU harness incorrectly assumed downstream `caption_id` in raw
+Lite input (`id`); it failed before launching inference on 2026-08-28. Reusing
+the production resolver and testing all three schemas prevents that diagnostic
+from maintaining a separate input contract. The failed attempt is retained in
+the isolated checkout's incident history; production was not interrupted.
