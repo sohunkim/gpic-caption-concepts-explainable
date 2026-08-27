@@ -74,3 +74,28 @@ termination retain the incident policy. There is no automatic error retry.
 
 These controls require the pause-capable code from the start of a run. Do not
 hot-update a running checkout or rewrite an old run's identity to adopt them.
+
+## Real GPU Restart Smoke
+
+`scripts/verify_fixed_lexicon_gpu_restart.py` runs the real Stage 1-6 producer,
+not mocked workers. Supply an existing small immutable caption manifest,
+inventory bundle, preposition lexicon, a fresh output root, and two GPU indices.
+It preserves all input row fields and order while creating four equal work
+units. It runs 1 GPU, drains one unit, resumes on 2 GPUs, drains two more units,
+then resumes on 1 GPU for the last unit. An uninterrupted 2-GPU run is the
+baseline. Caption count defaults to 100 and the smoke rejects inputs over 1000.
+
+Each attempt records actual descendant process GPU UUIDs using `ps` and
+`nvidia-smi`. Pause is requested only after CUDA processes appear on every
+requested GPU. Completed receipt and retained artifact hashes must stay
+unchanged on resume. Final verification compares Stage 5 canonical row
+multisets and every global Stage 6 TSV, plus population and immutable identity.
+
+The smoke uses batch 192, two Stage 3 shards per GPU, two Stage 4-6 shards per
+unit with one job, SQLite, and canonical-count retention in every attempt.
+It tests restart placement and equality, not production throughput or physical
+hot-plugging. Running concurrently with production can affect throughput;
+check memory headroom first and use a separate clean checkout and output root.
+The explicit 900-second per-attempt deadline is for this bounded diagnostic
+only, never a production runtime limit. Failure stops its own process session,
+records evidence, and remains incident-gated without retrying production.
