@@ -612,6 +612,7 @@ def run_mixed_caption_pipeline(
     stage6_sqlite_cache_rows: int | None = None,
     stage6_facts_output_mode: str = "write",
     runtime_resource_plan: Mapping[str, Any] | None = None,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     total_start = time.perf_counter()
     timing_seconds: dict[str, float] = {}
@@ -758,6 +759,7 @@ def run_mixed_caption_pipeline(
         from run_stage3_sharded import run_stage3_sharded
 
         stage3_sharded_summary = run_stage3_sharded(
+            memory_kwargs=memory_kwargs,
             caption_records=caption_records_path,
             sentence_rows=sentence_rows_path,
             tag_rows=tag_rows_path,
@@ -858,6 +860,7 @@ def run_mixed_caption_pipeline(
             stage456_merge_jobs=stage456_merge_jobs,
         )
         stage456_sharded_summary = run_stage456_sharded(
+            memory_kwargs=memory_kwargs,
             stage3_records=combined_stage3_path,
             output_dir=output_dir / "stage456_sharded",
             object_inventory=object_inventory,
@@ -928,6 +931,7 @@ def run_mixed_caption_pipeline(
             action_lookup=action_lookup,
             preposition_mwe_lookup=preposition_mwe_lookup,
             progress_path=stage4_dir / "progress.json",
+            **(memory_kwargs or {}),
         )
         mark_timing("stage4_extract_raw", stage_start)
         write_progress("stage4_extract_raw_complete", stage4=stage4_summary)
@@ -942,6 +946,7 @@ def run_mixed_caption_pipeline(
             canonical_edges_path=stage5_dir / "canonical_edges.jsonl",
             summary_path=None,
             progress_path=stage5_dir / "progress.json",
+            **(memory_kwargs or {}),
         )
         stage5_summary["formal_attribute_inventory_gate"] = True
         write_jsonl(stage5_dir / "summary.jsonl", [stage5_summary])
@@ -959,6 +964,7 @@ def run_mixed_caption_pipeline(
             count_backend=stage6_count_backend,
             sqlite_cache_rows=stage6_sqlite_cache_rows,
             facts_output_mode=stage6_facts_output_mode,
+            **(memory_kwargs or {}),
         )
         mark_timing("stage6_export_counts", stage_start)
         write_progress("stage6_export_counts_complete", stage6=stage6_summary)

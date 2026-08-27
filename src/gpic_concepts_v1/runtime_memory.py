@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -29,14 +30,16 @@ class MemorySafetyConfig:
     def resolved_memory_limit_gib(self) -> float | None:
         if self.memory_limit_gib is not None:
             return self.memory_limit_gib
-        return detect_cgroup_memory_limit_gib()
+        return detect_cgroup_memory_limit_gib() or detect_system_memory_gib()
 
     @property
     def memory_limit_source(self) -> str:
         if self.memory_limit_gib is not None:
             return "explicit"
-        if self.resolved_memory_limit_gib is not None:
+        if detect_cgroup_memory_limit_gib() is not None:
             return "cgroup"
+        if self.resolved_memory_limit_gib is not None:
+            return "system"
         return "unbounded_or_unavailable"
 
     @property
@@ -196,6 +199,14 @@ def raise_if_rss_limit_exceeded(
 
 
 def current_rss_kib() -> int | None:
+    if os.name == "nt":
+        import ctypes
+        get_memory, process, counter_type = _windows_rss_reader()
+        counters = counter_type()
+        counters.cb = ctypes.sizeof(counters)
+        if get_memory(process, ctypes.byref(counters), counters.cb):
+            return counters.WorkingSetSize // 1024
+        return None
     status_path = Path("/proc/self/status")
     if status_path.exists():
         for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -204,6 +215,81 @@ def current_rss_kib() -> int | None:
                 if len(parts) >= 2 and parts[1].isdigit():
                     return int(parts[1])
     return None
+
+
+@lru_cache(maxsize=1)
+def _windows_rss_reader():
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t) for name in (
+                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+            )
+        ]
+
+    get_process = ctypes.windll.kernel32.GetCurrentProcess
+    get_process.restype = wintypes.HANDLE
+    get_memory = ctypes.windll.psapi.GetProcessMemoryInfo
+    get_memory.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    return get_memory, get_process(), Counters
+
+
+@lru_cache(maxsize=1)
+def detect_system_memory_gib() -> float | None:
+    """Fallback for non-container hosts; a cgroup limit always takes priority."""
+    if os.name == "nt":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong) for name in (
+                    "total", "available", "page_total", "page_available",
+                    "virtual_total", "virtual_available", "extended",
+                )
+            ]
+
+        status = Status()
+        status.length = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.total / 1024**3
+        return None
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024**3
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def memory_config_from_kwargs(kwargs: Mapping[str, Any] | None = None) -> MemorySafetyConfig:
+    return MemorySafetyConfig(**{
+        name: value for name, value in (kwargs or {}).items()
+        if name in MemorySafetyConfig.__dataclass_fields__
+    })
+
+
+def child_memory_kwargs(
+    kwargs: Mapping[str, Any] | None, workers: int, *, separate_processes: bool = True,
+) -> dict[str, Any]:
+    """Divide one process-tree RSS budget, not the entire pod limit per child."""
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    config = memory_config_from_kwargs(kwargs)
+    budget = config.effective_max_rss_gib
+    result = dict(kwargs or {})
+    if budget is None:
+        raise ValueError("memory budget unavailable; provide --memory-limit-gib or --max-rss-gib")
+    if separate_processes:
+        parent_rss = current_rss_kib()
+        if parent_rss is None:
+            raise ValueError("parent RSS unavailable; cannot allocate a process-tree memory budget")
+        budget -= parent_rss / 1024**2
+    if budget <= 0:
+        raise MemoryError("parent already exhausts the process-tree RSS budget")
+    result["max_rss_gib"] = budget / workers
+    return result
 
 
 @lru_cache(maxsize=1)

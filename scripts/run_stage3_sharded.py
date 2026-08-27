@@ -21,6 +21,7 @@ for path in (SRC, SCRIPTS):
         sys.path.insert(0, str(path))
 
 from incident_gate import guarded_entrypoint  # noqa: E402
+from gpic_concepts_v1.runtime_memory import child_memory_kwargs
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer  # noqa: E402
 from gpic_concepts_v1.io_jsonl import iter_jsonl, open_text  # noqa: E402
@@ -165,6 +166,7 @@ def run_stage3_sharded(
     overwrite: bool = False,
     gpu_mode: str = "none",
     disabled_components: list[str] | tuple[str, ...] | None = None,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if sentence_shards < 1:
         raise ValueError("--sentence-shards must be greater than zero")
@@ -239,6 +241,7 @@ def run_stage3_sharded(
     step_started = time.perf_counter()
     shard_summaries = empty_shard_summaries + run_stage3_shards(
         non_empty_shards,
+        memory_kwargs=memory_kwargs,
         model=model,
         batch_size=batch_size,
         gpu_mode=gpu_mode,
@@ -551,15 +554,18 @@ def run_stage3_shards(
     progress_interval_records: int,
     disabled_components: tuple[str, ...],
     progress_path: Path,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not shards:
         return []
+    worker_memory = child_memory_kwargs(memory_kwargs, min(jobs, len(shards)))
     summaries: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = {
             executor.submit(
                 run_one_stage3_shard,
                 shard,
+                memory_kwargs=worker_memory,
                 model=model,
                 batch_size=batch_size,
                 gpu_mode=gpu_mode,
@@ -597,6 +603,7 @@ def run_one_stage3_shard(
     gpu_mode: str,
     progress_interval_records: int,
     disabled_components: tuple[str, ...],
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     command = build_stage3_worker_command(
@@ -608,6 +615,9 @@ def run_one_stage3_shard(
         disabled_components=disabled_components,
     )
     env = os.environ.copy()
+    for name in ("max_rss_gib", "memory_limit_gib", "rss_limit_fraction", "rss_reserve_gib"):
+        if (memory_kwargs or {}).get(name) is not None:
+            command.extend(["--" + name.replace("_", "-"), str(memory_kwargs[name])])
     if shard.gpu_device is not None:
         env["CUDA_VISIBLE_DEVICES"] = shard.gpu_device
     shard.output_path.parent.mkdir(parents=True, exist_ok=True)

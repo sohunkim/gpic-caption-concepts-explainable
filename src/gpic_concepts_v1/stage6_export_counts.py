@@ -14,6 +14,7 @@ import csv
 import json
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer
@@ -608,7 +609,10 @@ class _SqliteCountStore:
             path.unlink(missing_ok=True)
         self.db_path_for_summary = str(self._db_path)
         self._cache_rows_limit = cache_rows
-        self._cache_flush_rss_gib = memory_config.effective_max_rss_gib
+        rss_budget = memory_config.effective_max_rss_gib
+        self._cache_flush_rss_gib = rss_budget * 0.8 if rss_budget is not None else None
+        self._cache_check_interval = memory_config.memory_check_min_interval_seconds
+        self._last_cache_check = float("-inf")
         self.cache_flush_rss_gib_for_summary = self._cache_flush_rss_gib
         if self._cache_flush_rss_gib is not None and cache_rows is not None:
             self.cache_policy_for_summary = "rss_adaptive_with_row_hard_cap"
@@ -617,7 +621,7 @@ class _SqliteCountStore:
         elif cache_rows is not None:
             self.cache_policy_for_summary = "row_hard_cap_only"
         else:
-            self.cache_policy_for_summary = "unbounded_no_memory_limit_detected"
+            self.cache_policy_for_summary = "disk_only_no_memory_limit_detected"
         self._cache = _new_count_table_buckets()
         self._cache_row_count = 0
         self._conn = sqlite3.connect(str(self._db_path))
@@ -653,19 +657,24 @@ class _SqliteCountStore:
         _accumulate_count_fact(self._cache, fact)
         if len(bucket) != before:
             self._cache_row_count += 1
-            if self._should_flush_cache():
-                self.flush()
+        # Metadata can grow even when every fact has an existing count key.
+        if self._should_flush_cache():
+            self.flush()
 
     def _should_flush_cache(self) -> bool:
         if self._cache_row_count == 0:
             return False
         if self._cache_rows_limit is not None and self._cache_row_count >= self._cache_rows_limit:
             return True
-        if self._cache_flush_rss_gib is None:
+        now = time.monotonic()
+        if now - self._last_cache_check < self._cache_check_interval:
             return False
+        self._last_cache_check = now
+        if self._cache_flush_rss_gib is None:
+            return True
         rss_kib = current_rss_kib()
         if rss_kib is None:
-            return False
+            return True
         return rss_kib / 1024 / 1024 >= self._cache_flush_rss_gib
 
     def flush(self) -> None:

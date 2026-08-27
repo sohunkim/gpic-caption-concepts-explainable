@@ -17,6 +17,7 @@ from typing import Any
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer
 from gpic_concepts_v1.io_jsonl import iter_jsonl, write_jsonl
+from gpic_concepts_v1.runtime_memory import ProgressWriter, memory_config_from_kwargs
 from gpic_concepts_v1.schema import JsonObject, JsonRecord, PIPELINE_VERSION
 from gpic_concepts_v1.stage1 import make_caption_record_from_gpic_row
 from gpic_concepts_v1.stage2_preprocess import (
@@ -257,6 +258,7 @@ def run_stage3_annotate(
     caption_shape: str = "sentence",
     progress_output: str | Path | None = None,
     progress_interval_records: int = 5000,
+    memory_kwargs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run Stage 3 over Stage 1 sentence rows or tag-list rows."""
     if batch_size < 1:
@@ -266,6 +268,9 @@ def run_stage3_annotate(
     if progress_interval_records < 1:
         raise ValueError("progress_interval_records must be greater than zero")
     started = perf_counter()
+    memory_guard = ProgressWriter(None, stage_name="stage3",
+                                  memory_config=memory_config_from_kwargs(memory_kwargs))
+    memory_guard.check_memory(phase="model_load", force=True)
     progress_path = Path(progress_output) if progress_output is not None else None
     _write_stage3_progress(
         progress_path,
@@ -284,6 +289,7 @@ def run_stage3_annotate(
         disabled_components=disabled_components,
     )
     model_load_seconds = perf_counter() - model_load_start
+    memory_guard.check_memory(phase="model_loaded", force=True)
 
     span_counts: Counter[str] = Counter()
     token_total = 0
@@ -326,6 +332,7 @@ def run_stage3_annotate(
                 timing=timing,
             )
         for record in records:
+            memory_guard.check_memory(phase="annotation")
             total += 1
             token_total += len(record.tokens)
             noun_chunk_total += len(record.noun_chunks)
@@ -366,6 +373,7 @@ def run_stage3_annotate(
     summary = {
         "total": total,
         "written": written,
+        "max_rss_gib": memory_guard.memory_config.effective_max_rss_gib,
         "model": model,
         "batch_size": batch_size,
         "caption_shape": caption_shape,

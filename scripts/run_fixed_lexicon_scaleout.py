@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -28,6 +28,8 @@ from incident_gate import guarded_entrypoint
 from planned_pause import PauseControl, request_pause
 from gpic_concepts_v1.atomic_io import atomic_text_writer
 from gpic_concepts_v1.inventory_bundle import load_inventory_bundle
+from gpic_concepts_v1.cli_memory import add_memory_safety_args, memory_safety_kwargs
+from gpic_concepts_v1.runtime_memory import child_memory_kwargs
 from gpic_concepts_v1.stage3_annotate import (
     DEFAULT_STAGE3_BATCH_SIZE,
     DEFAULT_STAGE3_DISABLED_COMPONENTS,
@@ -76,6 +78,7 @@ class WorkerSettings:
     stage6_count_backend: str
     progress_interval_records: int
     retention_policy: str
+    memory_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def _utc_now() -> str:
@@ -462,6 +465,7 @@ def _worker_main(
             )
             started = time.perf_counter()
             run_mixed_caption_pipeline(
+                memory_kwargs=settings.memory_kwargs,
                 input_paths=[shard.path for shard in unit.shards],
                 output_dir=unit_dir,
                 object_inventory=Path(settings.object_inventory),
@@ -823,6 +827,14 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
             raise RuntimeError("COMPLETE.json references missing or changed final artifacts")
         return complete
     gpu_ids = discover_gpu_ids(args.gpus)
+    memory_kwargs = memory_safety_kwargs(args)
+    memory_kwargs.pop("progress_path", None)
+    worker_memory = child_memory_kwargs(memory_kwargs, len(gpu_ids))
+    _atomic_json(output_root / "runtime_memory_plan.json", {
+        "runtime_gpu_ids": gpu_ids, "unit_worker_memory": worker_memory,
+        "stage456_jobs_per_worker": args.stage456_jobs_per_worker,
+        "global_merge_jobs": args.global_merge_jobs,
+    })
     settings = WorkerSettings(
         output_root=str(output_root),
         run_identity_sha256=identity["identity_sha256"],
@@ -841,6 +853,7 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
         stage6_count_backend=args.stage6_count_backend,
         progress_interval_records=args.progress_interval_records,
         retention_policy=args.retention_policy,
+        memory_kwargs=worker_memory,
     )
     _write_progress(
         output_root,
@@ -879,6 +892,7 @@ def _run_prepared(args, output_root, units, bundle, bundle_path,
         [output_root / "units" / unit.unit_id / "stage6" for unit in units],
         merged_stage6,
         merge_jobs=args.global_merge_jobs,
+        memory_kwargs=memory_kwargs,
     )
     final_artifacts = _artifact_records(
         (path for path in merged_stage6.iterdir() if path.is_file()),
@@ -958,6 +972,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Stage 5 canonical artifacts and unit Stage 6 count tables only"
         ),
     )
+    add_memory_safety_args(parser, stage_name="fixed-lexicon process tree")
     return parser
 
 

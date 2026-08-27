@@ -34,6 +34,8 @@ from run_stage5_canonicalize import _raise_if_attribute_inventory_not_ready  # n
 
 from gpic_concepts_v1.atomic_io import atomic_text_writer  # noqa: E402
 from gpic_concepts_v1.cli_memory import add_memory_safety_args, memory_safety_kwargs  # noqa: E402
+from gpic_concepts_v1.count_merge_store import CountMergeStore, MergedCountRow
+from gpic_concepts_v1.runtime_memory import child_memory_kwargs, memory_config_from_kwargs
 from gpic_concepts_v1.io_jsonl import iter_jsonl, open_text  # noqa: E402
 from gpic_concepts_v1.stage4_extract_raw import (  # noqa: E402
     load_gpic_action_inventory,
@@ -77,24 +79,6 @@ class ShardInput:
     facts_output_mode: str
     sqlite_cache_rows: int | None
     memory_kwargs: dict[str, Any]
-
-
-@dataclass(slots=True)
-class MergedCountRow:
-    fields: dict[str, str]
-    count: int = 0
-    caption_count: int = 0
-    example_caption_ids: set[str] | None = None
-    rule_ids: set[str] | None = None
-    pipe_field_values: dict[str, list[str]] | None = None
-
-    def __post_init__(self) -> None:
-        if self.example_caption_ids is None:
-            self.example_caption_ids = set()
-        if self.rule_ids is None:
-            self.rule_ids = set()
-        if self.pipe_field_values is None:
-            self.pipe_field_values = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -287,6 +271,10 @@ def run_stage456_sharded(
         output_dir=str(output_dir),
         split_summary=split_summary,
     )
+    worker_memory = child_memory_kwargs(
+        stage_function_memory_kwargs(memory_kwargs or {}), min(jobs, shards),
+        separate_processes=min(jobs, shards) > 1,
+    )
     shard_inputs = [
         ShardInput(
             shard_index=index,
@@ -302,7 +290,7 @@ def run_stage456_sharded(
             count_backend=stage6_count_backend,
             facts_output_mode=stage6_facts_output_mode,
             sqlite_cache_rows=stage6_sqlite_cache_rows,
-            memory_kwargs=stage_function_memory_kwargs(memory_kwargs or {}),
+            memory_kwargs=worker_memory,
         )
         for index in range(shards)
     ]
@@ -329,6 +317,7 @@ def run_stage456_sharded(
         merge_jobs=merge_jobs,
         partitioned_merge_tables=partitioned_merge_tables,
         partitioned_merge_partitions=partitioned_merge_partitions,
+        memory_kwargs=memory_kwargs,
     )
     merge_seconds = time.perf_counter() - merge_started
 
@@ -345,6 +334,7 @@ def run_stage456_sharded(
         "output_dir": str(output_dir),
         "split": split_summary,
         "merge_jobs": merge_jobs,
+        "worker_memory": worker_memory,
         "shards": sorted(shard_summaries, key=lambda item: int(item["shard_index"])),
         "stage6_merged": merge_summary,
         "compare_stage6": compare_summary,
@@ -572,11 +562,14 @@ def merge_stage6_count_dirs(
     merge_jobs: int = 1,
     partitioned_merge_tables: set[str] | None = None,
     partitioned_merge_partitions: int = 0,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if merge_jobs < 1:
         raise ValueError("merge_jobs must be greater than zero")
     if partitioned_merge_partitions < 0:
         raise ValueError("partitioned_merge_partitions must be zero or greater")
+    if len({path.resolve() for path in shard_stage6_dirs}) != len(shard_stage6_dirs):
+        raise ValueError("duplicate Stage 6 input directory")
     output_dir.mkdir(parents=True, exist_ok=True)
     shard_summaries = [_read_stage6_summary(path) for path in shard_stage6_dirs]
     fact_type_counts = _sum_counters(summary.get("fact_type_counts", {}) for summary in shard_summaries)
@@ -619,17 +612,21 @@ def merge_stage6_count_dirs(
         if request not in partitioned_requests
     ]
     merge_results: list[dict[str, Any]] = []
+    standard_jobs = min(merge_jobs, max(1, len(standard_requests)))
+    standard_memory = child_memory_kwargs(
+        memory_kwargs, standard_jobs, separate_processes=standard_jobs > 1,
+    )
     if not standard_requests:
         pass
     elif merge_jobs == 1 or len(standard_requests) == 1:
         merge_results = [
-            _merge_count_table_shards_timed(spec, shard_paths, output_path)
+            _merge_count_table_shards_timed(spec, shard_paths, output_path, standard_memory)
             for spec, shard_paths, output_path in standard_requests
         ]
     else:
         with ProcessPoolExecutor(max_workers=min(merge_jobs, len(standard_requests))) as executor:
             futures = [
-                executor.submit(_merge_count_table_shards_timed, spec, shard_paths, output_path)
+                executor.submit(_merge_count_table_shards_timed, spec, shard_paths, output_path, standard_memory)
                 for spec, shard_paths, output_path in standard_requests
             ]
             for future in as_completed(futures):
@@ -642,6 +639,7 @@ def merge_stage6_count_dirs(
                 output_path,
                 partition_count=partitioned_merge_partitions,
                 jobs=requested_merge_jobs,
+                memory_kwargs=memory_kwargs,
             )
         )
 
@@ -696,6 +694,11 @@ def merge_stage6_count_dirs(
         "table_merge_seconds": dict(sorted(table_merge_seconds.items())),
         "table_merge_strategies": dict(sorted(table_merge_strategies.items())),
         "table_merge_details": dict(sorted(table_merge_details.items())),
+        "memory_budget": {
+            "total_max_rss_gib": memory_config_from_kwargs(memory_kwargs).effective_max_rss_gib,
+            "standard_worker_max_rss_gib": standard_memory["max_rss_gib"],
+            "standard_jobs": standard_jobs,
+        },
         "count_integrity": count_integrity,
     }
     _write_json(output_dir / "summary.json", summary)
@@ -706,16 +709,18 @@ def _merge_count_table_shards_timed(
     spec: CountTableSpec,
     shard_paths: list[Path],
     output_path: Path,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    result = merge_count_table_shards(spec, shard_paths, output_path)
+    result = merge_count_table_shards(spec, shard_paths, output_path, memory_kwargs=memory_kwargs)
     return {
         "file_name": spec.file_name,
         "output_path": str(output_path),
         "row_count": int(result["row_count"]),
         "count_sum": int(result["count_sum"]),
         "timing_seconds": round(time.perf_counter() - started, 6),
-        "merge_strategy": "single_pass",
+        "merge_strategy": "rss_adaptive",
+        "details": result["memory"],
     }
 
 
@@ -726,6 +731,7 @@ def _merge_count_table_shards_partitioned_timed(
     *,
     partition_count: int,
     jobs: int,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     result = merge_count_table_shards_partitioned(
@@ -734,6 +740,7 @@ def _merge_count_table_shards_partitioned_timed(
         output_path,
         partition_count=partition_count,
         jobs=jobs,
+        memory_kwargs=memory_kwargs,
     )
     details = {
         key: value
@@ -755,11 +762,26 @@ def merge_count_table_shards(
     spec: CountTableSpec,
     shard_paths: list[Path],
     output_path: Path,
-) -> dict[str, int]:
+    *,
+    memory_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if len({path.resolve() for path in shard_paths}) != len(shard_paths):
+        raise ValueError("duplicate count table input")
+    with CountMergeStore(output_path, value_fields=spec.value_fields,
+                         memory_config=memory_config_from_kwargs(memory_kwargs)) as store:
+        result = _merge_count_table_shards_with_store(spec, shard_paths, output_path, store)
+        result["memory"] = store.complete()
+        return result
+
+
+def _merge_count_table_shards_with_store(
+    spec: CountTableSpec, shard_paths: list[Path], output_path: Path, store: CountMergeStore,
+) -> dict[str, Any]:
     fieldnames = _count_table_fieldnames(spec)
     value_fields = set(spec.value_fields)
     merge_fields = set(spec.extra_value_fields)
-    rows_by_key: dict[str, MergedCountRow] = {}
+    rows_by_key = store.rows
     count_sum = 0
     for shard_path in shard_paths:
         if not shard_path.exists():
@@ -842,22 +864,26 @@ def merge_count_table_shards(
                             )
                         )
                 for field, field_index in merge_indices.items():
-                    current.pipe_field_values.setdefault(field, []).append(row[field_index])
+                    current.pipe_field_values.setdefault(field, set()).add(row[field_index])
                 row_count = int(row[count_index] or 0)
                 current.count += row_count
                 count_sum += row_count
                 current.caption_count += int(row[caption_count_index] or 0)
                 current.example_caption_ids.update(_split_pipe(row[example_caption_ids_index]))
-                current.pipe_field_values.setdefault("raw_variants", []).append(
+                if len(current.example_caption_ids) > 5:
+                    current.example_caption_ids = set(sorted(current.example_caption_ids)[:5])
+                current.pipe_field_values.setdefault("raw_variants", set()).add(
                     row[raw_variants_index],
                 )
                 current.rule_ids.update(_split_pipe(row[rule_ids_index]))
+                store.after_row()
 
-    sorted_items = sorted(rows_by_key.items(), key=lambda item: (-item[1].count, item[0]))
+    row_count = 0
     with atomic_text_writer(output_path, newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
         writer.writerow(fieldnames)
-        for count_key, row in sorted_items:
+        for count_key, row in store.sorted_rows():
+            row_count += 1
             writer.writerow(
                 [
                     count_key,
@@ -878,7 +904,7 @@ def merge_count_table_shards(
                 ]
             )
     return {
-        "row_count": len(sorted_items),
+        "row_count": row_count,
         "count_sum": count_sum,
     }
 
@@ -932,13 +958,16 @@ def merge_count_table_shards_partitioned(
     *,
     partition_count: int,
     jobs: int,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if len({path.resolve() for path in shard_paths}) != len(shard_paths):
+        raise ValueError("duplicate count table input")
     if partition_count < 1:
         raise ValueError("partition_count must be greater than zero")
     if jobs < 1:
         raise ValueError("jobs must be greater than zero")
     if partition_count == 1:
-        result = merge_count_table_shards(spec, shard_paths, output_path)
+        result = merge_count_table_shards(spec, shard_paths, output_path, memory_kwargs=memory_kwargs)
         row_count = int(result["row_count"])
         return {
             **result,
@@ -1050,6 +1079,9 @@ def merge_count_table_shards_partitioned(
 
         merge_started = time.perf_counter()
         partition_jobs = min(jobs, partition_count)
+        partition_memory = child_memory_kwargs(
+            memory_kwargs, partition_jobs, separate_processes=partition_jobs > 1,
+        )
         if partition_jobs == 1:
             partition_results = [
                 _merge_one_count_table_partition(
@@ -1057,6 +1089,7 @@ def merge_count_table_shards_partitioned(
                     partition_inputs[index],
                     partition_outputs[index],
                     index,
+                    partition_memory,
                 )
                 for index in range(partition_count)
             ]
@@ -1070,6 +1103,7 @@ def merge_count_table_shards_partitioned(
                         partition_inputs[index],
                         partition_outputs[index],
                         index,
+                        partition_memory,
                     )
                     for index in range(partition_count)
                 ]
@@ -1093,6 +1127,10 @@ def merge_count_table_shards_partitioned(
         "count_sum": count_sum,
         "partition_count": partition_count,
         "partition_jobs": partition_jobs,
+        "worker_max_rss_gib": partition_memory["max_rss_gib"],
+        "partition_memory": [result["memory"] for result in sorted(
+            partition_results, key=lambda result: result["partition_index"]
+        )],
         "nonempty_partition_count": sum(1 for count in partition_input_rows if count),
         "partition_input_rows": partition_input_rows,
         "partition_write_seconds": round(partition_write_seconds, 6),
@@ -1108,11 +1146,13 @@ def _merge_one_count_table_partition(
     input_path: Path,
     output_path: Path,
     partition_index: int,
+    memory_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    result = merge_count_table_shards(spec, [input_path], output_path)
+    result = merge_count_table_shards(spec, [input_path], output_path, memory_kwargs=memory_kwargs)
     return {
         "partition_index": partition_index,
+        "memory": result["memory"],
         "row_count": int(result["row_count"]),
         "count_sum": int(result["count_sum"]),
         "timing_seconds": round(time.perf_counter() - started, 6),

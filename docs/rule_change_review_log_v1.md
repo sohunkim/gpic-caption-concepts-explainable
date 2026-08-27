@@ -7341,3 +7341,25 @@ Decision status:
   used a 180s ceiling; no GPU model inference or production data was used.
 - Deployment boundary: the live 10M checkout was separately verified clean at
   `bd83c796ee654ea8bc584ca7361c5f8d3adde786`. It was not hot-updated or stopped.
+
+## 2026-08-28: Shared RAM Budget And Disk-Spilling Count Merge
+
+- Approval: user requested a structural correction after identifying that the
+  previous Stage 6 OOM fix should also cover final merge.
+- Scope: R28 execution/storage only. No inventory, extraction rule, GPU selector,
+  model, batch/group boundaries, fact definitions, or caption-count changes.
+  Expected TSV count/evidence/order delta is zero.
+- Replace unbounded table/partition dictionaries with one RSS-adaptive SQLite
+  spill store. Share one hardware-derived RSS budget through nested process
+  workers instead of giving each worker the whole pod's allowance.
+- Keep atomic TSV publication and completed-unit receipts. This change does not
+  add full-data checkpoints or restart healthy work on an elapsed-time timer.
+- Tests force spills for every count table, compare exact bytes against the
+  in-memory path, check conflict recovery and duplicate paths, and verify budget
+  propagation through Stage 3, Stage 4-6, and scale-out workers.
+- Risk: periodic RSS checks cannot intercept every native allocation or one
+  enormous record; GPU VRAM is separate. A too-small assigned budget fails
+  explicitly instead of silently changing batch semantics.
+- Deployment: validate the exact Git commit in an isolated MLXP checkout. Do not
+  hot-edit or relabel the already-running 10M attempt. Test results and measured
+  memory are recorded in `verification_count_merge_memory_20260828.md`.

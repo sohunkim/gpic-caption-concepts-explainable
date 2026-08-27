@@ -412,8 +412,8 @@ RSS safety contract:
   overrides it
 - write a single progress JSON by atomic replace when `--progress` or the mixed
   pipeline's stage-specific progress paths are provided
-- raise `MemoryError` before the pod is OOMKilled when RSS crosses the computed
-  guard
+- raise `MemoryError` when a sampled RSS crosses the computed guard. Periodic
+  checks cannot guarantee interception of a native allocation between samples.
 
 Do not add memory safety to only one of Stage 4, Stage 5, or Stage 6. If a
 memory/process failure pattern is discovered in one formal stage, inspect the
@@ -430,6 +430,16 @@ diagnostic hard caps only, not the production policy. Stage 6's in-memory
 backend is only for bounded diagnostics. If a formal production run trips the
 RSS guard, do not raise the limit and rerun blindly. Change that stage to a
 chunked, streaming, or disk-backed implementation first.
+
+The budget belongs to a process tree, not each child independently. Use
+`runtime_memory.child_memory_kwargs` at every parallel dispatch boundary.
+Final count merging is also a memory-heavy stage: `merge_stage6_count_dirs`
+and its ordinary/partitioned helpers must share `CountMergeStore`, including
+the fixed-lexicon runner's final merge. A partition count based on CPU jobs is
+not a memory bound. Require forced-spill byte equality for every count table
+and nested budget propagation tests when changing these paths. Missing memory
+measurements must not fall back to unbounded accumulation. Existing production
+processes keep their pinned code; do not claim a new guard is active in them.
 
 Do not wrap formal Stage 4/5/6 scripts in `run_script_with_timeout.py` for
 production-scale work. That wrapper uses a hard `os._exit` kill and Stage 4/5/6

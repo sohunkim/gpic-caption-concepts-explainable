@@ -1869,3 +1869,49 @@ failures could mix true setup problems with probe-only environment differences.
   `tests/test_stage3_sharded.py`: 50 passed in 7.31 seconds.
 - Before accepting recovery, run the locked 100-caption equality test again
   and check actual process placement on both GPU UUIDs during the full run.
+
+# 2026-08-28: Unbounded Count Merge After The Stage 6 SQLite Fix
+
+## Root cause and impact
+
+- The July Stage 6 fix streamed facts and used an RSS-adaptive SQLite count
+  store. It did not constrain the later shard/final TSV merger, which collected
+  all distinct keys in a dictionary before sorting. More merge processes split
+  work but did not impose a RAM bound on a large partition.
+- Nested processes also independently derived limits from the full pod instead
+  of sharing one process-tree budget. A per-process limit alone was therefore
+  not a total pod bound. The user's recollection of the earlier fix was correct;
+  that fix must not be described as missing or as covering this newer merger.
+- This inspection did not observe a new OOM: the running 10M attempt progressed
+  from 6M to 7M completed rows, with cgroup OOM counters still zero. The running
+  checkout remains pinned and unchanged.
+
+## Durable correction
+
+- Divide one hardware-derived RAM budget through unit, annotation, Stage 4-6,
+  and merge workers. Preserve model, grouping, batch and count semantics.
+- Use one RSS-adaptive merge accumulator for ordinary tables, hash partitions,
+  and the global merge. Spill at 80% of the assigned guard; use disk sorting
+  after spill and same-directory atomic final TSV publication.
+- Preserve original pipe evidence strings and exact top-five example behavior
+  across repeated flushes. Reject duplicate input paths. Test value conflicts
+  after spill and verify that failed output cannot replace a valid prior TSV.
+- Check the existing Stage 6 cache even when a fact reuses a key, since its
+  evidence can still grow. Unknown measurements cannot select an unlimited cache.
+- Regression coverage spans all count-table specifications and nested budgets.
+  See `verification_count_merge_memory_20260828.md` for measured results and the
+  limits of periodic RSS guards; this is not an absolute OOM guarantee.
+
+## Diagnostic failure and recovery
+
+- The first local RSS probe could not create a same-directory atomic file in
+  its sandbox-created temporary directory. Incident
+  `33ec3781b5114279a37357d01e3d9d4a` blocked reruns. Production data was untouched.
+- Approved verification then exercised the tight RSS guard rather than hanging.
+  Review found that Windows RSS sampling allocated a new ctypes structure type
+  and pointer binding on every sample. Cache the binding once and clear the
+  drained dictionary's backing allocation after a spill.
+- The unchanged 100,000-key, 32-MiB-headroom probe subsequently passed: 200,000
+  input rows, 13 spills, 100,000 output keys, 2.734 seconds. No budget increase
+  or alternate temp-directory workaround was used. The verification command
+  returned zero and the incident was resolved with its evidence recorded.

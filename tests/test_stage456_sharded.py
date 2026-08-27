@@ -84,7 +84,7 @@ class Stage456ShardedTests(unittest.TestCase):
                             "timing_seconds": {"total": 2.5},
                         },
                     ],
-                ),
+                ) as shard_mock,
                 patch.object(
                     stage456_module,
                     "merge_stage6_count_dirs",
@@ -101,6 +101,7 @@ class Stage456ShardedTests(unittest.TestCase):
                     shards=2,
                     jobs=1,
                     merge_jobs=3,
+                    memory_kwargs={"max_rss_gib": 12},
                 )
 
             self.assertIn("split_stage3_records", summary["timing_seconds"])
@@ -108,6 +109,8 @@ class Stage456ShardedTests(unittest.TestCase):
             self.assertIn("merge_stage6_counts", summary["timing_seconds"])
             self.assertEqual(summary["merge_jobs"], 3)
             self.assertEqual(merge_mock.call_args.kwargs["merge_jobs"], 3)
+            self.assertEqual(merge_mock.call_args.kwargs["memory_kwargs"], {"max_rss_gib": 12})
+            self.assertEqual(shard_mock.call_args.args[0][0].memory_kwargs["max_rss_gib"], 12)
             self.assertEqual(summary["timing_seconds"]["shards_total_max"], 2.5)
             self.assertEqual(summary["timing_seconds"]["shards_total_sum"], 3.75)
 

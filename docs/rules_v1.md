@@ -996,3 +996,18 @@ frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
   run identity, and final Stage 6 merge may consume only retained unit counts.
 - Large captions, Stage outputs, and count artifacts stay on MLXP storage.
   Desktop transfer is limited to versioned code and small manifests.
+- The process tree shares one hardware-derived RSS budget. Reserve the
+  coordinator's measured RSS before dividing its budget among concurrent unit,
+  Stage 3, Stage 4/5/6, and merge workers. Do not give each child the full pod
+  budget. Unknown limits/RSS block parallel budget assignment.
+- All Stage 6 TSV merges, including table-parallel, hash-partitioned, and
+  final scale-out merge, use the same adaptive accumulator. A soft threshold
+  below the RSS guard spills to SQLite; its ORDER BY is disk-backed. Never
+  assume a fixed partition count bounds distinct-key memory.
+- Memory allocation and spill boundaries are execution settings only. Preserve
+  counts, caption counts, value-field conflict checks, evidence, top-five
+  example IDs, and descending-count/ascending-key output ordering. A failure
+  must not promote a partial TSV or a COMPLETE receipt.
+- RSS checks are periodic, not an allocator or VRAM hard limit. A single
+  oversized caption/metadata row or a native allocation between checks can
+  still fail. Do not silently change batch/grouping semantics to recover.

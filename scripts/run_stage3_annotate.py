@@ -13,6 +13,7 @@ for path in (SRC, SCRIPTS):
         sys.path.insert(0, str(path))
 
 from incident_gate import guarded_entrypoint
+from gpic_concepts_v1.cli_memory import add_memory_safety_args, memory_safety_kwargs
 
 from gpic_concepts_v1.stage3_annotate import (
     DEFAULT_STAGE3_BATCH_SIZE,
@@ -92,6 +93,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Require spaCy GPU; fail early if CuPy/CUDA is unavailable.",
     )
+    add_memory_safety_args(parser, stage_name="Stage 3")
     return parser.parse_args()
 
 
@@ -110,6 +112,7 @@ def main() -> None:
         caption_shape=args.caption_shape,
         progress_output=args.progress_output,
         progress_interval_records=args.progress_interval_records,
+        memory_kwargs=memory_safety_kwargs(args),
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
 

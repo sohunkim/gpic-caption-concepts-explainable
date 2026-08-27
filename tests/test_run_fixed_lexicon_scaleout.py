@@ -231,11 +231,13 @@ def test_scaleout_worker_preserves_gpu_selector_through_stage3_subprocess(tmp_pa
     summary.write_text('{"total": 1}\n', encoding="utf-8")
 
     def run_stage3_subprocess(command, **kwargs):
+        assert command[command.index("--max-rss-gib") + 1] == "24"
         seen.append(kwargs["env"]["CUDA_VISIBLE_DEVICES"])
         return SimpleNamespace(returncode=0)
 
     def run_mixed(**kwargs):
         assert os.environ["CUDA_VISIBLE_DEVICES"] == gpu_id
+        assert kwargs["memory_kwargs"] == {"max_rss_gib": 24}
         shard = stage3.Stage3Shard(
             caption_shape="sentence", shard_index=0, input_path=tmp_path / "input.jsonl",
             output_path=tmp_path / "records.jsonl", summary_path=summary,
@@ -244,7 +246,7 @@ def test_scaleout_worker_preserves_gpu_selector_through_stage3_subprocess(tmp_pa
             gpu_device=kwargs["stage3_gpu_devices"][0])
         stage3.run_one_stage3_shard(shard, model="fixture", batch_size=192,
                                    gpu_mode="require", progress_interval_records=10,
-                                   disabled_components=())
+                                   disabled_components=(), memory_kwargs=kwargs["memory_kwargs"])
 
     monkeypatch.setattr(mixed, "run_mixed_caption_pipeline", run_mixed)
     monkeypatch.setattr(stage3.subprocess, "run", run_stage3_subprocess)
@@ -257,7 +259,8 @@ def test_scaleout_worker_preserves_gpu_selector_through_stage3_subprocess(tmp_pa
         action_inventory="action.tsv", preposition_mwe_lexicon="prep.tsv", lexicon_dir="lexicons",
         model="fixture", batch_size=192, progress_interval_records=10, stage3_shards_per_gpu=8,
         stage456_shards_per_worker=7, stage456_jobs_per_worker=7, stage456_merge_jobs=8,
-        stage6_count_backend="sqlite", run_identity_sha256="a" * 64, retention_policy="canonical_counts")
+        stage6_count_backend="sqlite", run_identity_sha256="a" * 64, retention_policy="canonical_counts",
+        memory_kwargs={"max_rss_gib": 24})
     tasks, events = Queue(), Queue()
     tasks.put({"unit_id": "unit_000000", "rows": 1, "shards": []})
     tasks.put(None)
