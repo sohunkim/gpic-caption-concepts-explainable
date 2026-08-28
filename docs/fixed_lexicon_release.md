@@ -76,3 +76,20 @@ handoff, atomic I/O), 29.11 seconds. Fixtures verify exact bytes, both producer
 revisions and readability after both original roots are made unavailable.
 Real release completion and cleanup evidence are recorded separately; passing
 fixtures is not evidence that a large transfer has finished.
+
+## Retired Misnamed 1M Audit
+
+`cleanup_obsolete_corrected_1m.py` is a deliberately restricted maintenance
+operation for the user-retired `gpic-scaleout/corrected-1m` tree. That tree was
+a Lite-prefix experiment, not the official Nano artifact. Without `--apply`
+the script only inspects. Application requires the independent release seal,
+no references from the pinned live continuation metadata or open process
+files, and an unchanged second audit. Original JSON metadata and all file
+hashes are preserved under `maintenance` before removal. The official
+`corrected-nano-1m`, the completed-unit source roots, and active Full paths are
+not deletion candidates. This is not a general-purpose directory cleaner.
+
+During local pre-deletion tests, raw JSON text comparison missed an escaped
+Windows path. The check now traverses parsed JSON strings and normalizes path
+separators, with native/POSIX/nested reference regressions. No real cleanup was
+attempted before this correction; JSON serialization is not a path identity.
