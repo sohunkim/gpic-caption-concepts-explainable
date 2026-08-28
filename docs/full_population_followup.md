@@ -39,6 +39,27 @@ runs fixed-lexicon extraction. The step order is mandatory. Runtime configs pin
 repositories, dependencies, source metadata, inventories, and smoke evidence.
 Concrete deployment locators belong in operational configs.
 
+## Unreaped Predecessor Incident
+
+The first unattended handoff stalled after Lite completed because Linux kept
+the detached guard as a zombie under a non-reaping container PID 1.
+`kill(pid, 0)` succeeded even though no computation remained. The original
+tests mocked the process predicate and did not exercise this OS transition.
+
+Background jobs, incident markers, and report-server process checks now share
+the zombie-aware predicate in `incident_gate.pid_is_running`. Linux `Z`/`X`
+states are stopped, not running; unreadable/unknown state fails closed. An
+exited PID alone is never success: the continuation still requires the pinned
+COMPLETE identity/population and the subsequent receipt/hash verifier. PID
+reuse checks and live-process waiting remain intact. Linux regression tests
+create an actual unreaped child, then verify completed handoff, failed handoff,
+and stale-marker incident detection before reaping the test child.
+
+Recovery must replace only the idle controller after recording its state.
+Completed Lite output and the pinned producer settings are not regenerated or
+changed. Deploy the tested fix as an exact clean Git commit and verify an
+actual transition out of predecessor waiting, not merely a live controller PID.
+
 Start it through `run_background_job.py` inside the compute pod, with an owned
 control directory and log paths. This retains incident gating and survives a
 desktop disconnect. A Linux flock rejects duplicate controllers. Healthy

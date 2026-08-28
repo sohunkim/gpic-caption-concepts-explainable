@@ -15,6 +15,12 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from incident_gate import pid_is_running
+
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 DETACHED_PROCESS = 0x00000008
@@ -321,11 +327,7 @@ def process_matches_record(record: dict[str, Any]) -> bool:
 def process_is_running(pid: int) -> bool:
     if os.name == "nt":
         return bool(process_started_at_utc(pid))
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    return pid_is_running(pid)
 
 
 def process_started_at_utc(pid: int) -> str:

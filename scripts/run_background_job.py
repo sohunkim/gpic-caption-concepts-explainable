@@ -18,6 +18,7 @@ from incident_gate import (
     STATE_DIR_ENV,
     assert_pipeline_clear,
     create_incident,
+    pid_is_running,
 )
 
 
@@ -279,11 +280,7 @@ def is_run_mlxp_bash_arg(arg: str) -> bool:
 
 def process_is_running(pid: int) -> bool:
     if os.name != "nt":
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return pid_is_running(pid)
 
     import ctypes
     from ctypes import wintypes

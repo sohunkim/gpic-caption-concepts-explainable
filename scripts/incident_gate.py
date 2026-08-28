@@ -169,6 +169,35 @@ def redact_argv(argv: Sequence[str]) -> list[str]:
     return redacted
 
 
+def pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        if not sys.platform.startswith("linux"):
+            return False
+        raise IncidentGateError(f"cannot verify process {pid}: {exc}") from exc
+    if not sys.platform.startswith("linux"):
+        return True
+    try:
+        # kill(pid, 0) also succeeds for an exited, unreaped child. The comm
+        # field may contain spaces/parentheses; state follows its final ')'.
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        state = fields[0]
+    except FileNotFoundError:
+        return False
+    except (OSError, IndexError) as exc:
+        raise IncidentGateError(f"cannot read process {pid} state: {exc}") from exc
+    if state in {"Z", "X", "x"}:
+        return False
+    if state not in {"R", "S", "D", "T", "t", "W", "K", "P", "I"}:
+        raise IncidentGateError(f"unknown process {pid} state: {state!r}")
+    return True
+
+
 def process_is_running(record: dict[str, Any]) -> bool:
     if record.get("hostname") != socket.gethostname():
         return False
@@ -176,13 +205,7 @@ def process_is_running(record: dict[str, Any]) -> bool:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return pid_is_running(pid)
 
 
 def build_incident(
