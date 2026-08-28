@@ -7380,3 +7380,23 @@ Decision status:
 - Regression: 47 local tests passed in 73.15s, including source immutability,
   duplicate prevention, corrupt/changed inputs, old/new unit merge and unchanged
   same-run identity enforcement. See `fixed_lexicon_unit_handoff.md`.
+
+## 2026-08-28: Independent Durable Lexical Release
+
+- Approval: user requested organizing the cluttered lexical results.
+- Scope: R28 post-completion storage only; no inference, inventory, extraction,
+  canonicalization, count or input-order changes. Expected byte/count delta: 0.
+- Preserve original unit producer identities and receipts, including imported
+  units. Stream-copy all retained files to a resumable staging directory and
+  verify receipt and destination SHA256 before promotion. Runtime read paths
+  are release-relative; source paths survive only as provenance.
+- Failure prevention: incomplete/duplicate coverage, changed handoff receipts,
+  corrupt bytes, insufficient capacity, mixed partial plans and concurrent
+  publishers block promotion. No source deletion or live-config update is part
+  of publishing. Cleanup requires a separate active-reference audit.
+- Reversibility: original roots remain unchanged during verification. Capacity
+  is admitted against measured personal usage plus an explicit reserve; this
+  is not a live storage-quota enforcement service.
+- Regression: source immutability, old-root independence, interruption/resume,
+  coverage, corruption, capacity and lock tests in
+  `tests/test_publish_fixed_lexicon_release.py`.

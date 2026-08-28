@@ -1018,9 +1018,18 @@ frozen. It changes execution and artifact layout, not Stage 1-6 semantics.
   revisions and smoke evidence in the handoff plan. Verify every retained
   source artifact at startup and before final merge. Source receipts and
   manifests remain read-only; the new summary lists each unit's original
-  producer and Stage 5 root. No copying, relabeling or double counting of
-  source units is allowed. Ordinary resume still rejects identity changes.
+  producer and Stage 5 root. During execution handoff, no copying, relabeling
+  or double counting of source units is allowed. Ordinary resume still rejects
+  identity changes.
 - Legacy runs without planned-pause control cannot acquire that capability
   retroactively. A user-approved stop may abandon incomplete units; only
   receipt-verified completed units qualify for handoff. Never claim a crash
   or signal termination was a graceful unit-boundary pause.
+- A separate post-completion release may copy retained artifacts to durable
+  storage without changing the original run or its receipts. Preserve each
+  producer identity, explicit unit/shard coverage, and all artifact bytes.
+  Verify source receipt SHA256 and destination SHA256 before promotion from a
+  resumable partial directory. Release read paths must be relative to the
+  release root; old absolute paths belong only to provenance. Publishing must
+  not delete source roots or switch live continuation inputs. Cleanup requires
+  a separate check of active dependencies and verified durable replacements.

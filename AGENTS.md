@@ -113,7 +113,10 @@ Preferred remote execution patterns:
   `wait`. The repository command must remain foreground and unbounded; the
   cell is the monitor. A partial DDN transfer must write to a resumable
   `.partial` directory and may be promoted only after a no-difference rsync
-  dry-run and required artifact hash checks.
+  dry-run and required artifact hash checks. A layout-changing release may
+  instead use the receipt-enumerated publisher: complete source-file coverage,
+  source and copied-file SHA256 verification, and a final unchanged-plan check
+  are required before promotion. Never substitute a size-only copy check.
 - Do not run `scripts\run_script_with_timeout.py`,
   `scripts\run_mlxp_bash.py`, `scripts\run_mlxp_probe_bash.py`, or
   `scripts\incident_gate.py run` in `multi_tool_use.parallel`. They share the
