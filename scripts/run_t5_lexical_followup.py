@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 from incident_gate import guarded_entrypoint
+from copy_verified_files import discard_cached_pages
 from planned_pause import PauseControl, STATE_FILE, request_pause
 
 KIND = "gpic-t5-lexical-followup-v1"
@@ -139,6 +140,7 @@ def scan_jsonl(path: Path) -> dict[str, Any]:
                 raise ValueError(f"row without id: {path}, line {rows + 1}")
             ids.update(identifier.encode("utf-8") + b"\n")
             rows += 1
+        discard_cached_pages(handle)
     return {"rows": rows, "sha256": content.hexdigest(),
             "id_sequence_sha256": ids.hexdigest(), "size_bytes": path.stat().st_size}
 

@@ -14,11 +14,21 @@ from incident_gate import guarded_entrypoint
 BLOCK = 8 * 1024 * 1024
 
 
-def digest(path: Path) -> str:
+def discard_cached_pages(handle) -> bool:
+    """Release clean pages after one-pass I/O; never flush global kernel caches."""
+    if not hasattr(os, 'posix_fadvise') or not hasattr(os, 'POSIX_FADV_DONTNEED'):
+        return False
+    os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    return True
+
+
+def digest(path: Path, *, discard_cache: bool = False) -> str:
     result = hashlib.sha256()
     with path.open('rb') as handle:
         for chunk in iter(lambda: handle.read(BLOCK), b''):
             result.update(chunk)
+        if discard_cache:
+            discard_cached_pages(handle)
     return result.hexdigest()
 
 

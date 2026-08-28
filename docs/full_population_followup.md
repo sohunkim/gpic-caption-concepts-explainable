@@ -80,6 +80,42 @@ The input-only environment pins PyArrow separately from the inference
 environments. Missing Parquet support must not trigger installation into a live
 T5 or lexical environment.
 
+## File Cache And Completed Input Reuse
+
+The first Full input export finished, but T5 admission then rejected all
+workers: the cgroup charged nearly all used memory to clean inactive file
+pages, not live Python heaps. Treating every charged byte as unavailable made
+the existing host reserve fail before inference. No OOM was observed. Do not
+lower that reserve or silently change the locked producer to bypass admission.
+
+One-pass registry/input hashing, completed input validation, and T5 input/output
+verification now advise Linux to discard clean cached pages of each consumed
+file with `posix_fadvise(..., POSIX_FADV_DONTNEED)`. Input writers flush and fsync
+before issuing this advice. It changes neither bytes, ordering nor fingerprints;
+it does not drop global caches or allocate memory. Generic hashes remain
+unchanged unless explicitly opted in. Platforms without this API keep the
+ordinary I/O behavior; supported API errors are not silently swallowed.
+
+This is advisory, not a guarantee of reclaimed capacity. The unchanged producer
+admission must still pass on the actual pod. It is not a fix for future live
+heap or GPU memory exhaustion. Check cgroup anon/file/dirty/writeback and OOM
+counters separately from the total when diagnosing another admission failure.
+
+A completed input export is reused only after source/config/manifest/lock and
+every shard checksum and boundary are revalidated. It is not reparsed or
+regenerated. Partial exports retain the existing ordered resume path. The
+producer's population-schema validation remains a separate mandatory step.
+Regression tests cover bytes/SHA preservation, file-scoped advice, unsupported
+platforms, API errors, completed-export tampering, and T5 ID/order/receipt gates.
+
+The expanded Windows regression exposed an atomic-replace PermissionError in
+pause forwarding, which rewrote the same request on every poll. `request_pause`
+now reuses an existing request for the same identity/attempt. Restart/attempt
+checks and child-failure propagation remain in force; a deterministic test
+rejects redundant rewrites. The full Windows suite passed outside the sandbox.
+That result does not prove the underlying Windows permission/locking cause is
+fixed; keep this execution-environment distinction in deployment evidence.
+
 ## Verification
 
 The focused local suite covers copy integrity, input order/marker preservation,

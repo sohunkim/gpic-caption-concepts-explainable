@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 
-from copy_verified_files import atomic_json, digest
+from copy_verified_files import atomic_json, digest, discard_cached_pages
 from incident_gate import guarded_entrypoint
 
 
@@ -34,7 +34,7 @@ def export_rows(rows, config, root):
         path = root / 'shards' / f'shard_{index:06d}.jsonl'
         if (shard['path'] != str(path.absolute()) or shard['start'] != committed_rows
                 or shard['rows'] != min(config['rows_per_shard'], config['expected_rows'] - committed_rows)
-                or path.stat().st_size != shard['size_bytes'] or digest(path) != shard['sha256']):
+                or path.stat().st_size != shard['size_bytes'] or digest(path, discard_cache=True) != shard['sha256']):
             raise ValueError('committed input shard changed')
         committed_rows += shard['rows']
     (root / 'shards').mkdir(parents=True, exist_ok=True)
@@ -87,6 +87,7 @@ def export_rows(rows, config, root):
             if count - start == config['rows_per_shard'] or count == config['expected_rows']:
                 handle.flush()
                 os.fsync(handle.fileno())
+                discard_cached_pages(handle)
                 handle.close()
                 handle = None
                 shard = {'shard_id': target.stem, 'path': str(target.absolute()),
@@ -121,8 +122,18 @@ def export_registry(config):
         raise ValueError('registry metadata differs from the approved source')
     root.mkdir(parents=True, exist_ok=True)
     atomic_json(root / 'progress.json', {'state': 'verifying_registry'})
-    if digest(source) != config['registry_sha256'] or meta['file_checksums']['registry.parquet'] != config['registry_sha256']:
+    if digest(source, discard_cache=True) != config['registry_sha256'] or meta['file_checksums']['registry.parquet'] != config['registry_sha256']:
         raise ValueError('registry checksum differs')
+    if (root / 'COMPLETE.json').exists():
+        from validate_population_continuation_inputs import validate_export_files
+
+        complete = json.loads((root / 'COMPLETE.json').read_text())
+        if complete.get('config_sha256') != json_sha(config):
+            raise ValueError('completed registry export identity changed')
+        validate_export_files(config)
+        atomic_json(root / 'progress.json', {'state': 'complete', 'rows': config['expected_rows'],
+                    'reused_verified_export': True})
+        return
     parquet = pq.ParquetFile(source)
     if parquet.metadata.num_rows != config['expected_rows']:
         raise ValueError('Parquet footer row count differs')
@@ -130,6 +141,10 @@ def export_registry(config):
         for batch in parquet.iter_batches(batch_size=1024, use_threads=False):
             yield from batch.to_pylist()
     shards, ids_sha = export_rows(rows(), config, root)
+    preserved_columns = parquet.schema_arrow.names
+    parquet.close()
+    with source.open('rb') as handle:
+        discard_cached_pages(handle)
     lock = {'kind': 'gpic-caption-population-lock-v1',
             'source_population_id': config['source_population_id'], 'tier': config['tier'],
             'source_rows': config['expected_rows'], 'source_file_sha256': config['registry_sha256'],
@@ -150,7 +165,7 @@ def export_registry(config):
     atomic_json(root / 'COMPLETE.json', {'status': 'verified', 'rows': config['expected_rows'],
                 'config_sha256': json_sha(config), 'input_manifest_sha256': digest(root / 'input_manifest.json'),
                 'population_lock_sha256': digest(root / 'population_lock.json'),
-                'id_uniqueness': 'strictly_increasing_registry_key', 'preserved_columns': parquet.schema_arrow.names})
+                'id_uniqueness': 'strictly_increasing_registry_key', 'preserved_columns': preserved_columns})
     atomic_json(root / 'progress.json', {'state': 'complete', 'rows': config['expected_rows']})
 
 

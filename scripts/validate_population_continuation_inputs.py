@@ -11,10 +11,7 @@ from copy_verified_files import digest, atomic_json
 from incident_gate import guarded_entrypoint
 
 
-def validate(config, producer_repo):
-    sys.path.insert(0, str(Path(producer_repo) / 'src'))
-    from gpic_frequency.population_identity import normalize_population_lock, validate_manifest_population
-
+def validate_export_files(config):
     root = Path(config['output_root'])
     complete = json.loads((root / 'COMPLETE.json').read_text())
     if (complete['status'] != 'verified' or complete['rows'] != config['expected_rows']
@@ -22,9 +19,7 @@ def validate(config, producer_repo):
             or complete['population_lock_sha256'] != digest(root / 'population_lock.json')):
         raise ValueError('population export completion differs')
     manifest = json.loads((root / 'input_manifest.json').read_text())
-    lock = normalize_population_lock(json.loads((root / 'population_lock.json').read_text()))
-    population = validate_manifest_population(manifest,
-        [SimpleNamespace(rows=row['rows']) for row in manifest['shards']], population_lock=lock)
+    lock = json.loads((root / 'population_lock.json').read_text())
     if (lock['source_file_sha256'] != config['registry_sha256']
             or lock['source_population_id'] != config['source_population_id']
             or lock['tier'] != config['tier'] or lock['source_rows'] != config['expected_rows']):
@@ -34,12 +29,24 @@ def validate(config, producer_repo):
         expected = root / 'shards' / f'shard_{index:06d}.jsonl'
         if (shard['path'] != str(expected.absolute()) or shard['start'] != rows
                 or shard['rows'] != min(config['rows_per_shard'], config['expected_rows'] - rows)
-                or expected.stat().st_size != shard['size_bytes'] or digest(expected) != shard['sha256']):
+                or expected.stat().st_size != shard['size_bytes'] or digest(expected, discard_cache=True) != shard['sha256']):
             raise ValueError(f'input shard identity/boundary mismatch: {index}')
         rows += shard['rows']
         atomic_json(root / 'validation_progress.json', {'state': 'validating', 'shards': index + 1, 'rows': rows})
     if rows != config['expected_rows']:
         raise ValueError('input shards do not cover the complete population')
+    return root, complete, manifest, lock
+
+
+def validate(config, producer_repo):
+    sys.path.insert(0, str(Path(producer_repo) / 'src'))
+    from gpic_frequency.population_identity import normalize_population_lock, validate_manifest_population
+
+    root, complete, manifest, lock = validate_export_files(config)
+    population = validate_manifest_population(manifest,
+        [SimpleNamespace(rows=row['rows']) for row in manifest['shards']],
+        population_lock=normalize_population_lock(lock))
+    rows = sum(shard['rows'] for shard in manifest['shards'])
     atomic_json(root / 'validation.json', {'status': 'passed', 'rows': rows,
                 'population_identity_sha256': population['identity_sha256'],
                 'input_manifest_sha256': complete['input_manifest_sha256']})

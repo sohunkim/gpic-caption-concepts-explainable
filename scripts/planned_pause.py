@@ -82,7 +82,13 @@ def request_pause(root: Path, *, expected_attempt: str | None = None) -> dict:
         "kind": KIND, "identity": state["identity"], "attempt": state["attempt"],
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
-    _write(root / REQUEST_FILE, request)
+    request_path = root / REQUEST_FILE
+    previous = _read(request_path) if request_path.exists() else {}
+    if all(previous.get(key) == request[key] for key in ("kind", "identity", "attempt")):
+        # Polling a pending request must not replace a file the child is reading.
+        request = previous
+    else:
+        _write(request_path, request)
     # A concurrent restart must not accidentally pause the new attempt.
     current = _read(path)
     if current["attempt"] != state["attempt"]:

@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import run_t5_lexical_followup as followup
+import planned_pause
 from planned_pause import PauseControl, STATE_FILE, request_pause
 from incident_gate import guarded_entrypoint, RUN_TOKEN_ENV, STATE_DIR_ENV
 
@@ -70,6 +71,34 @@ def test_validates_output_bytes_rows_order_and_grouping(run_fixture):
     assert result["status"] == "verified"
     assert events == ["verifying_t5"]
     assert followup.t5_state(config)[0]
+
+
+def test_verification_releases_consumed_input_and_output_cache(run_fixture, monkeypatch):
+    config, _, output = run_fixture
+    calls = []
+
+    def release(handle):
+        assert not handle.closed
+        path = Path(handle.name)
+        assert handle.tell() == path.stat().st_size
+        calls.append(path)
+
+    monkeypatch.setattr(followup, "discard_cached_pages", release)
+    assert followup.verify_t5(config, lambda *a, **kw: None)["rows"] == 2
+    source = Path(followup.input_shards(Path(config["input_manifest"]))[0]["path"])
+    assert calls == [source, output]
+
+
+def test_repeated_pause_does_not_replace_a_pending_request(tmp_path, monkeypatch):
+    control = PauseControl.start(tmp_path, "fixture")
+    first = request_pause(tmp_path, expected_attempt=control.attempt)
+
+    def reject_rewrite(*_):
+        raise AssertionError("pending request was rewritten")
+
+    monkeypatch.setattr(planned_pause, "_write", reject_rewrite)
+    assert request_pause(tmp_path, expected_attempt=control.attempt) == first
+    assert control.requested()
 
 
 def test_population_metadata_does_not_change_shard_identity(run_fixture):
@@ -275,7 +304,8 @@ def test_pause_forwards_to_real_child_and_does_not_mask_failure(tmp_path, fail):
                           {"queue_root": str(queue_root), "poll_seconds": 0.01},
                           lambda state, **kw: events.append(state), pause=control)
     assert "draining" in events
-    assert followup.read_json(child_root / STATE_FILE)["status"] == ("failed" if fail else "paused")
+    assert followup.read_json(child_root / STATE_FILE)["status"] == ("failed" if fail else "paused"), (
+        queue_root / "logs/lexical_formal.log").read_text(encoding="utf-8", errors="replace")
 
 
 def test_planned_pause_exits_without_incident_and_resume_keeps_gates(run_fixture, tmp_path, monkeypatch):
